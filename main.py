@@ -229,10 +229,10 @@ def build_gui():
     preset_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
     preset_frame.pack(fill="x", padx=10, pady=5)
     ctk.CTkLabel(preset_frame, text="Style:").pack(side="left")
-    preset_var = ctk.StringVar(value="Bold Pop")
+    preset_var = ctk.StringVar(value="Opus Clean")
     ctk.CTkOptionMenu(preset_frame, values=list(captioner.PRESETS.keys()), variable=preset_var).pack(side="left", padx=5)
 
-    caption_y_var = [0.72]
+    caption_y_var = [0.76]
 
     transcription_status = ctk.StringVar(value="Waiting...")
     ctk.CTkLabel(main_frame, textvariable=transcription_status, text_color="gray").pack(anchor="w", padx=10)
