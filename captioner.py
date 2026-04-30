@@ -19,7 +19,7 @@ PRESETS = {
         "uppercase": False,
         "bold": True,
         "tracking": 0,
-        "active_scale": 125,
+        "active_scale": 100,  # no scale — avoids line shaking from libass reflow
     },
     "Bold Pop": {
         "text_color": "&H00FFFFFF",
