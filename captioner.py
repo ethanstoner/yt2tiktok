@@ -19,7 +19,7 @@ PRESETS = {
         "uppercase": False,
         "bold": True,
         "tracking": 0,
-        "active_scale": 100,  # no scale — avoids line shaking from libass reflow
+        "active_scale": 125,
     },
     "Bold Pop": {
         "text_color": "&H00FFFFFF",
@@ -211,18 +211,19 @@ def _wrap_phrase_words(words: list[str], font, max_width_px: int, max_lines: int
     return r"\N".join(lines[:max_lines])
 
 
-def _format_phrase_text(
+def _format_base_phrase(
     transcript: list[dict],
     phrase_indices: list[int],
     phrase_start: float,
     preset: dict,
     max_width_px: int,
 ) -> tuple[str, int]:
-    """Build one ASS phrase event with per-word timed transforms."""
-    font = _load_font(preset["fontsize"])
-    active_scale = preset.get("active_scale", 100)
+    """Build the STABLE base layer: color-only transforms, no scaling.
 
-    # Build plain words for line-wrapping measurement
+    This layer never changes size so it stays rock solid.
+    """
+    font = _load_font(preset["fontsize"])
+
     plain_words = [
         transcript[i]["word"].upper() if preset["uppercase"] else transcript[i]["word"]
         for i in phrase_indices
@@ -230,8 +231,7 @@ def _format_phrase_text(
     wrapped_plain = _wrap_phrase_words(plain_words, font, max_width_px=max_width_px)
     line_count = len(wrapped_plain.split(r"\N"))
 
-    # Build markup words with per-word timed transforms so the whole line
-    # stays as a single dialogue event and does not flicker between words.
+    # Color-only transforms per word (no \fscx/\fscy — prevents reflow)
     markup_words = []
     for pos, global_idx in enumerate(phrase_indices):
         word = transcript[global_idx]["word"]
@@ -247,27 +247,16 @@ def _format_phrase_text(
         start_ms = max(0, int(round(word_start * 1000)))
         end_ms = max(start_ms + 10, int(round(word_end * 1000)))
 
-        if active_scale != 100:
-            word = (
-                "{"
-                f"\\c{preset['text_color']}\\fscx100\\fscy100"
-                f"\\t({start_ms},{end_ms},\\c{preset['highlight_color']}\\fscx{active_scale}\\fscy{active_scale})"
-                f"\\t({end_ms},{end_ms + 10},\\c{preset['text_color']}\\fscx100\\fscy100)"
-                "}"
-                f"{word}"
-            )
-        else:
-            word = (
-                "{"
-                f"\\c{preset['text_color']}"
-                f"\\t({start_ms},{end_ms},\\c{preset['highlight_color']})"
-                f"\\t({end_ms},{end_ms + 10},\\c{preset['text_color']})"
-                "}"
-                f"{word}"
-            )
+        word = (
+            "{"
+            f"\\c{preset['text_color']}"
+            f"\\t({start_ms},{end_ms},\\c{preset['highlight_color']})"
+            f"\\t({end_ms},{end_ms + 10},\\c{preset['text_color']})"
+            "}"
+            f"{word}"
+        )
         markup_words.append(word)
 
-    # Map markup words onto the same line structure as plain wrapping
     markup_iter = iter(markup_words)
     wrapped_markup = []
     for line in wrapped_plain.split(r"\N"):
@@ -275,12 +264,82 @@ def _format_phrase_text(
         wrapped_markup.append(" ".join(next(markup_iter) for _ in range(n_words)))
     phrase_text = r"\N".join(wrapped_markup)
 
-    # Prepend animation + tracking
     anim_tag = _build_phrase_animation(preset)
     spacing = preset.get("tracking", 0)
     if anim_tag or spacing:
         phrase_text = "{" + anim_tag + (f"\\fsp{spacing}" if spacing else "") + "}" + phrase_text
     return phrase_text, line_count
+
+
+def _build_overlay_events(
+    transcript: list[dict],
+    phrase_indices: list[int],
+    phrase_start: float,
+    phrase_end: float,
+    preset: dict,
+    frame_width: int,
+    caption_zone_top: int,
+) -> list[str]:
+    """Build overlay layer events: one per word, absolute positioned, scaled up.
+
+    Each word gets its own event on layer 1, absolutely positioned so scaling
+    one word doesn't affect others. Only visible while that word is active.
+    """
+    active_scale = preset.get("active_scale", 100)
+    if active_scale == 100:
+        return []  # no overlay needed
+
+    font = _load_font(preset["fontsize"])
+    events = []
+
+    # Calculate word positions by measuring cumulative widths
+    plain_words = [
+        transcript[i]["word"].upper() if preset["uppercase"] else transcript[i]["word"]
+        for i in phrase_indices
+    ]
+    space_w = _measure_text(" ", font)
+    word_widths = [_measure_text(w, font) for w in plain_words]
+    total_w = sum(word_widths) + space_w * (len(plain_words) - 1)
+    x_start = (frame_width - total_w) / 2
+
+    # Y position: use MarginV from style — libass places text from bottom
+    # For \an8 (top-center), MarginV is from top. Overlay needs same Y.
+    # We use \an5 (center) with explicit \pos for each word.
+    line_height = preset["fontsize"]
+    y_center = caption_zone_top + line_height // 2
+
+    x_cursor = x_start
+    for pos, global_idx in enumerate(phrase_indices):
+        word = plain_words[pos]
+        word_w = word_widths[pos]
+        word_center_x = x_cursor + word_w / 2
+
+        word_start = transcript[global_idx]["start"]
+        if pos + 1 < len(phrase_indices):
+            word_end = transcript[phrase_indices[pos + 1]]["start"]
+        else:
+            word_end = transcript[global_idx]["end"]
+
+        # Scale animation: start at 100, pop to active_scale, back to 100
+        pop_ms = 80
+        override = (
+            "{"
+            f"\\an5\\pos({word_center_x:.0f},{y_center})"
+            f"\\c{preset['highlight_color']}"
+            f"\\bord{preset['border']}\\shad0"
+            f"\\fscx100\\fscy100"
+            f"\\t(0,{pop_ms},\\fscx{active_scale}\\fscy{active_scale})"
+            f"\\t({pop_ms},{pop_ms + 60},\\fscx100\\fscy100)"
+            "}"
+        )
+
+        events.append(
+            f"Dialogue: 1,{_ass_timestamp(word_start)},{_ass_timestamp(word_end)},Default,,0,0,0,,{override}{word}"
+        )
+
+        x_cursor += word_w + space_w
+
+    return events
 
 
 def generate_caption_ass(
@@ -324,6 +383,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     events = []
     max_width_px = int(frame_width * 0.78)
+    active_scale = p.get("active_scale", 100)
+
     for phrase_indices in phrases:
         if not phrase_indices:
             continue
@@ -331,7 +392,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         phrase_start = transcript[phrase_indices[0]]["start"]
         phrase_end = transcript[phrase_indices[-1]]["end"]
 
-        phrase_text, line_count = _format_phrase_text(
+        # Layer 0: stable base phrase (color changes only, no scaling)
+        phrase_text, line_count = _format_base_phrase(
             transcript, phrase_indices, phrase_start, p, max_width_px,
         )
         if line_count == 1:
@@ -339,6 +401,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         events.append(
             f"Dialogue: 0,{_ass_timestamp(phrase_start)},{_ass_timestamp(phrase_end)},Default,,0,0,0,,{phrase_text}"
         )
+
+        # Layer 1: overlay with scale pop per word (absolute positioned, won't shift base)
+        if active_scale != 100 and line_count == 1:
+            overlay_events = _build_overlay_events(
+                transcript, phrase_indices, phrase_start, phrase_end,
+                p, frame_width, caption_zone_top,
+            )
+            events.extend(overlay_events)
 
     ass_content = header + "\n".join(events) + "\n"
 
