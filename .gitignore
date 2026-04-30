@@ -1,0 +1,9 @@
+clips/
+debug/
+__pycache__/
+*.pyc
+venv/
+.env
+*.cookies
+failed_clips.txt
+.yt2tiktok.json
