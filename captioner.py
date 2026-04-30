@@ -2,26 +2,41 @@ import os
 from pathlib import Path
 from PIL import ImageFont
 
-CAPTION_FONT_PATH = str(Path(__file__).parent / "fonts" / "BubblegumSans-Regular.ttf")
+CAPTION_FONT_PATH = str(Path(__file__).parent / "fonts" / "RobotoCondensed-Bold.ttf")
 if not os.path.isfile(CAPTION_FONT_PATH):
-    CAPTION_FONT_PATH = str(Path(__file__).parent / "fonts" / "RobotoCondensed-Bold.ttf")
+    CAPTION_FONT_PATH = str(Path(__file__).parent / "fonts" / "BubblegumSans-Regular.ttf")
 
 PRESETS = {
+    "Opus Clean": {
+        "text_color": "&H00FFFFFF",
+        "highlight_color": "&H0057FF78",  # mint green #78FF57 in BGR
+        "outline_color": "&H00000000",
+        "border": 6,
+        "shadow": 1,
+        "shadow_color": "&H90000000",
+        "fontsize": 62,
+        "animation": "none",
+        "uppercase": False,
+        "bold": True,
+        "tracking": 0,
+        "active_scale": 125,
+    },
     "Bold Pop": {
         "text_color": "&H00FFFFFF",
-        "highlight_color": "&H0000D4FF",  # bright orange-yellow #FFD400 in BGR
+        "highlight_color": "&H0057FF78",  # mint green #78FF57 in BGR
         "outline_color": "&H00000000",
         "border": 8,
         "shadow": 3,
-        "shadow_color": "&HA0000000",
-        "fontsize": 72,
-        "animation": "scale",
+        "shadow_color": "&H90000000",
+        "fontsize": 70,
+        "animation": "fade",
         "uppercase": False,
         "bold": True,
+        "tracking": 1,
     },
     "Neon Glow": {
         "text_color": "&H00FFFFFF",
-        "highlight_color": "&H00FFFF00",  # cyan #00FFFF in BGR
+        "highlight_color": "&H00F6FF3C",  # electric lime #3CFFF6 in BGR
         "outline_color": "&H00000000",
         "border": 7,
         "shadow": 5,
@@ -30,54 +45,65 @@ PRESETS = {
         "animation": "bounce",
         "uppercase": False,
         "bold": True,
+        "tracking": 1,
     },
     "Impact": {
         "text_color": "&H00FFFFFF",
-        "highlight_color": "&H001414FF",  # bright red #FF1414 in BGR
+        "highlight_color": "&H00FFCA3A",  # gold #3ACAFF in BGR
         "outline_color": "&H00000000",
         "border": 9,
         "shadow": 3,
-        "shadow_color": "&HA0000000",
+        "shadow_color": "&H90000000",
         "fontsize": 76,
         "animation": "slam",
         "uppercase": True,
         "bold": True,
+        "tracking": 1,
     },
     "Pastel": {
         "text_color": "&H00FFFFFF",
-        "highlight_color": "&H00FF88FF",  # hot pink #FF88FF in BGR
+        "highlight_color": "&H00FFD6C7",  # soft peach #C7D6FF in BGR
         "outline_color": "&H00000000",
         "border": 7,
         "shadow": 2,
-        "shadow_color": "&HA0000000",
+        "shadow_color": "&H90000000",
         "fontsize": 66,
         "animation": "fade",
         "uppercase": False,
         "bold": True,
+        "tracking": 1,
     },
     "Minimal": {
         "text_color": "&H00FFFFFF",
-        "highlight_color": "&H0088DDFF",  # warm yellow #FFDD88 in BGR
+        "highlight_color": "&H00C9F5FF",  # pale blue #FFF5C9 in BGR
         "outline_color": "&H00000000",
         "border": 5,
         "shadow": 2,
-        "shadow_color": "&HA0000000",
+        "shadow_color": "&H90000000",
         "fontsize": 56,
         "animation": "fade",
         "uppercase": False,
         "bold": True,
+        "tracking": 0,
     },
 }
 
 
-def group_into_phrases(transcript: list[dict], max_words: int = 5, gap_threshold: float = 0.4) -> list[list[int]]:
+def group_into_phrases(
+    transcript: list[dict],
+    max_words: int = 4,
+    gap_threshold: float = 0.35,
+    max_duration: float = 2.8,
+) -> list[list[int]]:
     if not transcript:
         return []
     phrases = []
     current_phrase = [0]
     for i in range(1, len(transcript)):
         gap = transcript[i]["start"] - transcript[i - 1]["end"]
-        if gap > gap_threshold or len(current_phrase) >= max_words:
+        phrase_start = transcript[current_phrase[0]]["start"]
+        phrase_duration = transcript[i]["end"] - phrase_start
+        if gap > gap_threshold or len(current_phrase) >= max_words or phrase_duration >= max_duration:
             phrases.append(current_phrase)
             current_phrase = [i]
         else:
@@ -130,7 +156,131 @@ def _build_phrase_animation(preset: dict) -> str:
         return "\\fscx140\\fscy140\\t(0,100,\\fscx100\\fscy100)"
     elif anim == "fade":
         return "\\fad(200,0)"
+    elif anim == "none":
+        return ""
     return ""
+
+
+def _load_font(size: int):
+    try:
+        return ImageFont.truetype(CAPTION_FONT_PATH, size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def _measure_text(text: str, font) -> int:
+    bbox = font.getbbox(text or "A")
+    return bbox[2] - bbox[0]
+
+
+def _wrap_phrase_words(words: list[str], font, max_width_px: int, max_lines: int = 2) -> str:
+    if not words:
+        return ""
+    lines: list[str] = []
+    current: list[str] = []
+
+    for word in words:
+        candidate_words = current + [word]
+        candidate = " ".join(candidate_words)
+        if current and _measure_text(candidate, font) > max_width_px:
+            lines.append(" ".join(current))
+            current = [word]
+        else:
+            current = candidate_words
+
+    if current:
+        lines.append(" ".join(current))
+
+    if len(lines) <= max_lines:
+        return r"\N".join(lines)
+
+    midpoint = (len(words) + 1) // 2
+    best_layout = None
+    best_score = None
+
+    for split in range(max(1, midpoint - 2), min(len(words), midpoint + 2) + 1):
+        left = " ".join(words[:split])
+        right = " ".join(words[split:])
+        score = max(_measure_text(left, font), _measure_text(right, font))
+        if best_score is None or score < best_score:
+            best_score = score
+            best_layout = (left, right)
+
+    if best_layout:
+        return r"\N".join(best_layout)
+    return r"\N".join(lines[:max_lines])
+
+
+def _format_phrase_text(
+    transcript: list[dict],
+    phrase_indices: list[int],
+    phrase_start: float,
+    preset: dict,
+    max_width_px: int,
+) -> tuple[str, int]:
+    """Build one ASS phrase event with per-word timed transforms."""
+    font = _load_font(preset["fontsize"])
+    active_scale = preset.get("active_scale", 100)
+
+    # Build plain words for line-wrapping measurement
+    plain_words = [
+        transcript[i]["word"].upper() if preset["uppercase"] else transcript[i]["word"]
+        for i in phrase_indices
+    ]
+    wrapped_plain = _wrap_phrase_words(plain_words, font, max_width_px=max_width_px)
+    line_count = len(wrapped_plain.split(r"\N"))
+
+    # Build markup words with per-word timed transforms so the whole line
+    # stays as a single dialogue event and does not flicker between words.
+    markup_words = []
+    for pos, global_idx in enumerate(phrase_indices):
+        word = transcript[global_idx]["word"]
+        if preset["uppercase"]:
+            word = word.upper()
+
+        word_start = transcript[global_idx]["start"] - phrase_start
+        if pos + 1 < len(phrase_indices):
+            word_end = transcript[phrase_indices[pos + 1]]["start"] - phrase_start
+        else:
+            word_end = transcript[global_idx]["end"] - phrase_start
+
+        start_ms = max(0, int(round(word_start * 1000)))
+        end_ms = max(start_ms + 10, int(round(word_end * 1000)))
+
+        if active_scale != 100:
+            word = (
+                "{"
+                f"\\c{preset['text_color']}\\fscx100\\fscy100"
+                f"\\t({start_ms},{end_ms},\\c{preset['highlight_color']}\\fscx{active_scale}\\fscy{active_scale})"
+                f"\\t({end_ms},{end_ms + 10},\\c{preset['text_color']}\\fscx100\\fscy100)"
+                "}"
+                f"{word}"
+            )
+        else:
+            word = (
+                "{"
+                f"\\c{preset['text_color']}"
+                f"\\t({start_ms},{end_ms},\\c{preset['highlight_color']})"
+                f"\\t({end_ms},{end_ms + 10},\\c{preset['text_color']})"
+                "}"
+                f"{word}"
+            )
+        markup_words.append(word)
+
+    # Map markup words onto the same line structure as plain wrapping
+    markup_iter = iter(markup_words)
+    wrapped_markup = []
+    for line in wrapped_plain.split(r"\N"):
+        n_words = len(line.split())
+        wrapped_markup.append(" ".join(next(markup_iter) for _ in range(n_words)))
+    phrase_text = r"\N".join(wrapped_markup)
+
+    # Prepend animation + tracking
+    anim_tag = _build_phrase_animation(preset)
+    spacing = preset.get("tracking", 0)
+    if anim_tag or spacing:
+        phrase_text = "{" + anim_tag + (f"\\fsp{spacing}" if spacing else "") + "}" + phrase_text
+    return phrase_text, line_count
 
 
 def generate_caption_ass(
@@ -147,14 +297,13 @@ def generate_caption_ass(
     Uses centered phrases with inline color tags for highlighted words.
     Each phrase appears as one subtitle event, centered on screen.
     """
-    p = PRESETS.get(preset, PRESETS["Bold Pop"])
-    highlight_set = set(highlight_indices)
+    p = PRESETS.get(preset, PRESETS["Opus Clean"])
     phrases = group_into_phrases(transcript)
 
-    y_margin = int((1.0 - y_position) * frame_height)
-    fontname = "BubblegumSans-Regular"
-    if not os.path.isfile(str(Path(__file__).parent / "fonts" / "BubblegumSans-Regular.ttf")):
-        fontname = "RobotoCondensed-Bold"
+    line_height = p["fontsize"] + int(p["fontsize"] * 0.30)
+    caption_zone_top = int(y_position * frame_height) - (line_height * 2)
+    caption_zone_top = max(1260, min(1360, caption_zone_top))
+    fontname = Path(CAPTION_FONT_PATH).stem
 
     bold_flag = -1 if p["bold"] else 0
 
@@ -167,14 +316,14 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{fontname},{p['fontsize']},{p['text_color']},&H000000FF,{p['outline_color']},{p['shadow_color']},{bold_flag},0,0,0,100,100,2,0,1,{p['border']},{p['shadow']},2,30,30,{y_margin},1
+Style: Default,{fontname},{p['fontsize']},{p['text_color']},&H000000FF,{p['outline_color']},{p['shadow_color']},{bold_flag},0,0,0,100,100,{p.get('tracking', 0)},0,1,{p['border']},{p['shadow']},8,70,70,{caption_zone_top},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
     events = []
-
+    max_width_px = int(frame_width * 0.78)
     for phrase_indices in phrases:
         if not phrase_indices:
             continue
@@ -182,31 +331,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         phrase_start = transcript[phrase_indices[0]]["start"]
         phrase_end = transcript[phrase_indices[-1]]["end"]
 
-        # Build phrase text with inline color overrides for highlighted words
-        parts = []
-        for global_idx in phrase_indices:
-            word = transcript[global_idx]["word"]
-            if p["uppercase"]:
-                word = word.upper()
-
-            if global_idx in highlight_set:
-                # Color override for highlighted word
-                parts.append(f"{{\\c{p['highlight_color']}}}{word}{{\\c{p['text_color']}}}")
-            else:
-                parts.append(word)
-
-        phrase_text = " ".join(parts)
-
-        # Add animation
-        anim_tag = _build_phrase_animation(p)
-        if anim_tag:
-            phrase_text = f"{{{anim_tag}}}" + phrase_text
-
-        start_ts = _ass_timestamp(phrase_start)
-        end_ts = _ass_timestamp(phrase_end)
-
+        phrase_text, line_count = _format_phrase_text(
+            transcript, phrase_indices, phrase_start, p, max_width_px,
+        )
+        if line_count == 1:
+            phrase_text = r"{\alpha&HFF&}_\N{\alpha&H00&}" + phrase_text
         events.append(
-            f"Dialogue: 0,{start_ts},{end_ts},Default,,0,0,0,,{phrase_text}"
+            f"Dialogue: 0,{_ass_timestamp(phrase_start)},{_ass_timestamp(phrase_end)},Default,,0,0,0,,{phrase_text}"
         )
 
     ass_content = header + "\n".join(events) + "\n"
