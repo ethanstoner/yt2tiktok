@@ -142,7 +142,110 @@ def _build_encoder_args() -> list[str]:
         return ["-c:v", "h264_nvenc", "-preset", "p1", "-tune", "hq", "-rc", "vbr", "-cq", "19", "-qmin", "1", "-qmax", "99", "-b:v", "0"]
     return ["-c:v", "libx264", "-preset", "fast", "-crf", "19"]
 
-def process_clip(video_path: str, title: str, idx: int, total: int, start: float, duration: float, target_dir: str, mode: str = "blurred", log_fn=None) -> str | None:
+
+def _find_natural_pause(transcript: list[dict], window_start: float, window_end: float) -> float | None:
+    words_in_window = [
+        w for w in transcript
+        if w["start"] >= window_start and w["end"] <= window_end
+    ]
+    if len(words_in_window) < 2:
+        return None
+    best_gap = 0.0
+    best_cut = None
+    for i in range(len(words_in_window) - 1):
+        gap = words_in_window[i + 1]["start"] - words_in_window[i]["end"]
+        if gap > best_gap:
+            best_gap = gap
+            best_cut = (words_in_window[i]["end"] + words_in_window[i + 1]["start"]) / 2
+    if best_gap >= 0.15:
+        return best_cut
+    return None
+
+
+def _find_cliffhanger(transcript: list[dict], window_start: float, window_end: float, llm) -> float | None:
+    words_in_window = [
+        (i, w) for i, w in enumerate(transcript)
+        if w["start"] >= window_start and w["end"] <= window_end
+    ]
+    if len(words_in_window) < 5:
+        return None
+    indexed = " ".join(f"{j}:{w['word']}" for j, (_, w) in enumerate(words_in_window))
+    prompt = (
+        "Below is a transcript segment from a video (no punctuation). "
+        "Find the word after which cutting the video would create maximum "
+        "suspense or a cliffhanger that makes the viewer want to watch "
+        "the next part. Return ONLY the index number of that word.\n\n"
+        f"Words: {indexed}"
+    )
+    try:
+        response = llm.complete(prompt)
+        idx = int(response.strip().split()[0])
+        if 0 <= idx < len(words_in_window):
+            _, w = words_in_window[idx]
+            return w["end"]
+    except Exception:
+        pass
+    return None
+
+
+def calculate_cut_points(
+    duration: float,
+    cut_mode: str = "random",
+    transcript: list[dict] = None,
+    llm=None,
+) -> list[tuple[float, float]]:
+    if cut_mode == "random" or transcript is None:
+        clips = []
+        start = 0.0
+        while start < duration:
+            length = random.randint(CLIP_MIN, CLIP_MAX)
+            end = min(duration, start + length)
+            clips.append((start, end - start))
+            start = end
+        if len(clips) >= 2 and clips[-1][1] < CLIP_MIN:
+            prev_start, prev_dur = clips[-2]
+            _, last_dur = clips[-1]
+            clips[-2] = (prev_start, prev_dur + last_dur)
+            clips.pop()
+        return clips
+
+    clips = []
+    start = 0.0
+    target_length = 65
+
+    while start < duration:
+        target_end = start + target_length
+        if target_end >= duration:
+            clips.append((start, duration - start))
+            break
+
+        window_start = start + 55
+        window_end = min(start + 75, duration)
+        cut_at = None
+
+        if cut_mode == "cliffhanger" and llm is not None:
+            cut_at = _find_cliffhanger(transcript, window_start, window_end, llm)
+
+        if cut_at is None:
+            cut_at = _find_natural_pause(transcript, window_start, window_end)
+
+        if cut_at is None:
+            cut_at = start + random.randint(CLIP_MIN, CLIP_MAX)
+
+        cut_at = min(cut_at, duration)
+        clips.append((start, cut_at - start))
+        start = cut_at
+
+    if len(clips) >= 2 and clips[-1][1] < CLIP_MIN:
+        prev_start, prev_dur = clips[-2]
+        _, last_dur = clips[-1]
+        clips[-2] = (prev_start, prev_dur + last_dur)
+        clips.pop()
+
+    return clips
+
+
+def process_clip(video_path: str, title: str, idx: int, total: int, start: float, duration: float, target_dir: str, mode: str = "blurred", caption_ass: str = None, log_fn=None) -> str | None:
     out = os.path.join(target_dir, f"{title}_clip_{idx}.mp4")
     os.makedirs(target_dir, exist_ok=True)
     orig_w, orig_h = get_video_dimensions(video_path)
@@ -180,14 +283,14 @@ def process_clip(video_path: str, title: str, idx: int, total: int, start: float
         filter_chain = (
             "[0:v]scale=540:960,gblur=sigma=30,scale=1080:1920:flags=lanczos,setsar=1[bg];"
             "[0:v]scale=1080:ih*1080/iw:force_original_aspect_ratio=decrease,setsar=1[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,{text_filters}[v]"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,{text_filters}" + (f",ass='{caption_ass}'" if caption_ass else "") + "[v]"
         )
         filter_flag = "-filter_complex"
         map_args = ["-map", "[v]", "-map", "0:a?"]
     else:
         filter_chain = (
             "scale=1080:ih*1080/iw:force_original_aspect_ratio=decrease,"
-            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,{text_filters}"
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,{text_filters}" + (f",ass='{caption_ass}'" if caption_ass else "")
         )
         filter_flag = "-vf"
         map_args = []
@@ -212,34 +315,68 @@ def process_clip(video_path: str, title: str, idx: int, total: int, start: float
     return out
 
 
-def split_video(video_path: str, title: str, mode: str = "blurred", log_fn=None, progress_fn=None) -> tuple[str, int]:
+def split_video(
+    video_path: str,
+    title: str,
+    mode: str = "blurred",
+    cut_mode: str = "random",
+    transcript: list[dict] = None,
+    llm=None,
+    parallel: int = None,
+    caption_ass_map: dict = None,
+    log_fn=None,
+    progress_fn=None,
+) -> tuple[str, int]:
+    import concurrent.futures
+    import threading as _threading
+
     target_dir = str(CLIPS_DIR / title)
     duration = get_video_duration(video_path)
-    clips: list[tuple[float, float]] = []
-    start = 0.0
-    while start < duration:
-        length = random.randint(CLIP_MIN, CLIP_MAX)
-        end = min(duration, start + length)
-        clips.append((start, end - start))
-        start = end
-    if len(clips) >= 2 and clips[-1][1] < CLIP_MIN:
-        prev_start, prev_dur = clips[-2]
-        _, last_dur = clips[-1]
-        clips[-2] = (prev_start, prev_dur + last_dur)
-        clips.pop()
+
+    if cut_mode != "random" and transcript is None:
+        if log_fn:
+            log_fn("Transcription unavailable, using random cuts")
+        cut_mode = "random"
+
+    clips = calculate_cut_points(duration, cut_mode, transcript, llm)
     total = len(clips)
+
+    if parallel is None:
+        parallel = 2 if _USE_NVENC else 4
+
     if log_fn:
         encoder = "GPU (NVENC)" if _USE_NVENC else "CPU (libx264)"
-        log_fn(f"Splitting into {total} clips using {encoder}...")
-    completed = 0
-    for i, (clip_start, clip_dur) in enumerate(clips, 1):
-        result = process_clip(video_path, title, i, total, clip_start, clip_dur, target_dir, mode=mode, log_fn=log_fn)
-        if result:
-            completed += 1
-        if progress_fn:
-            progress_fn(f"Clip {i}/{total}")
+        log_fn(f"Splitting into {total} clips using {encoder} ({parallel} workers)...")
+
+    completed = [0]
+    lock = _threading.Lock()
+
+    def encode_clip(args):
+        i, clip_start, clip_dur = args
+        ass_path = caption_ass_map.get(i) if caption_ass_map else None
+        result = process_clip(
+            video_path, title, i, total, clip_start, clip_dur,
+            target_dir, mode=mode, caption_ass=ass_path, log_fn=log_fn,
+        )
+        with lock:
+            completed[0] += 1
+            if progress_fn:
+                progress_fn(f"Clip {completed[0]}/{total}")
+        return result
+
+    clip_args = [(i, cs, cd) for i, (cs, cd) in enumerate(clips, 1)]
+
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as executor:
+        futures = {executor.submit(encode_clip, args): args for args in clip_args}
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            if result:
+                results.append(result)
+
     if log_fn:
-        log_fn(f"Completed {completed}/{total} clips in: {target_dir}")
+        log_fn(f"Completed {len(results)}/{total} clips in: {target_dir}")
     if progress_fn:
         progress_fn("")
+
     return target_dir, total

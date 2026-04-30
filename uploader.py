@@ -1,9 +1,9 @@
 import os
-import json
 import datetime
 import calendar
 import time
 from pathlib import Path
+import config as cfg
 
 # ─── TikTok Selector Constants ───────────────────────────────────────────
 SELECTORS = {
@@ -38,8 +38,6 @@ COOKIE_SEARCH_DIRS = [
     Path.home() / "tiktok_cookies",
 ]
 
-_CONFIG_PATH = Path.home() / ".yt2tiktok.json"
-
 
 def parse_cookies_file(cookie_file_path: str) -> list[dict] | None:
     cookies = []
@@ -71,26 +69,14 @@ def find_cookie_files() -> list[str]:
 
 
 def load_last_cookie_path() -> str:
-    try:
-        if _CONFIG_PATH.exists():
-            data = json.loads(_CONFIG_PATH.read_text())
-            path = data.get("last_cookie_path", "")
-            if path and os.path.exists(path):
-                return path
-    except Exception:
-        pass
+    path = cfg.get("last_cookie_path", "")
+    if path and os.path.exists(path):
+        return path
     return ""
 
 
 def save_last_cookie_path(path: str):
-    try:
-        data = {}
-        if _CONFIG_PATH.exists():
-            data = json.loads(_CONFIG_PATH.read_text())
-        data["last_cookie_path"] = path
-        _CONFIG_PATH.write_text(json.dumps(data))
-    except Exception:
-        pass
+    cfg.set("last_cookie_path", path)
 
 
 def verify_cookies(cookie_file: str, headless: bool = True, log_fn=None) -> str | None:
