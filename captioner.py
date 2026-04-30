@@ -9,48 +9,63 @@ if not os.path.isfile(CAPTION_FONT_PATH):
 PRESETS = {
     "Bold Pop": {
         "text_color": "&H00FFFFFF",
-        "highlight_color": "&H0004C2F7",
-        "border": 4,
-        "shadow_color": None,
-        "fontsize": 48,
+        "highlight_color": "&H0000D4FF",  # bright orange-yellow #FFD400 in BGR
+        "outline_color": "&H00000000",
+        "border": 8,
+        "shadow": 3,
+        "shadow_color": "&HA0000000",
+        "fontsize": 72,
         "animation": "scale",
         "uppercase": False,
+        "bold": True,
     },
     "Neon Glow": {
         "text_color": "&H00FFFFFF",
-        "highlight_color": "&H00FFF000",
-        "border": 3,
-        "shadow_color": "&H00FFF000",
-        "fontsize": 46,
+        "highlight_color": "&H00FFFF00",  # cyan #00FFFF in BGR
+        "outline_color": "&H00000000",
+        "border": 7,
+        "shadow": 5,
+        "shadow_color": "&H60FFFF00",
+        "fontsize": 68,
         "animation": "bounce",
         "uppercase": False,
+        "bold": True,
     },
     "Impact": {
         "text_color": "&H00FFFFFF",
-        "highlight_color": "&H003B3BFF",
-        "border": 5,
-        "shadow_color": None,
-        "fontsize": 52,
+        "highlight_color": "&H001414FF",  # bright red #FF1414 in BGR
+        "outline_color": "&H00000000",
+        "border": 9,
+        "shadow": 3,
+        "shadow_color": "&HA0000000",
+        "fontsize": 76,
         "animation": "slam",
         "uppercase": True,
+        "bold": True,
     },
     "Pastel": {
         "text_color": "&H00FFFFFF",
-        "highlight_color": "&H00DB8FFF",
-        "border": 3,
-        "shadow_color": None,
-        "fontsize": 44,
+        "highlight_color": "&H00FF88FF",  # hot pink #FF88FF in BGR
+        "outline_color": "&H00000000",
+        "border": 7,
+        "shadow": 2,
+        "shadow_color": "&HA0000000",
+        "fontsize": 66,
         "animation": "fade",
         "uppercase": False,
+        "bold": True,
     },
     "Minimal": {
         "text_color": "&H00FFFFFF",
-        "highlight_color": "&H00CCCCCC",
-        "border": 2,
-        "shadow_color": None,
-        "fontsize": 36,
+        "highlight_color": "&H0088DDFF",  # warm yellow #FFDD88 in BGR
+        "outline_color": "&H00000000",
+        "border": 5,
+        "shadow": 2,
+        "shadow_color": "&HA0000000",
+        "fontsize": 56,
         "animation": "fade",
         "uppercase": False,
+        "bold": True,
     },
 }
 
@@ -82,7 +97,6 @@ def detect_keywords_heuristic(transcript: list[dict], max_per_phrase: int = 5) -
 
 
 def detect_keywords_llm(transcript: list[dict], llm) -> list[int]:
-    text = " ".join(w["word"] for w in transcript)
     word_list = " ".join(f"{i}:{w['word']}" for i, w in enumerate(transcript))
     prompt = (
         "Pick the 3-5 most impactful or emotional words from this transcript "
@@ -105,22 +119,17 @@ def _ass_timestamp(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
-def _build_word_animation(preset: dict, word_start: float, phrase_start: float) -> str:
+def _build_phrase_animation(preset: dict) -> str:
+    """Build ASS animation tags for the entire phrase appearance."""
     anim = preset["animation"]
-    delay_ms = int((word_start - phrase_start) * 1000)
-
     if anim == "scale":
-        return f"\\fscx90\\fscy90\\t({delay_ms},{delay_ms + 100},\\fscx100\\fscy100)"
+        return "\\fscx85\\fscy85\\t(0,120,\\fscx100\\fscy100)"
     elif anim == "bounce":
-        return (
-            f"\\fscx85\\fscy85"
-            f"\\t({delay_ms},{delay_ms + 80},\\fscx105\\fscy105)"
-            f"\\t({delay_ms + 80},{delay_ms + 150},\\fscx100\\fscy100)"
-        )
+        return "\\fscx80\\fscy80\\t(0,100,\\fscx108\\fscy108)\\t(100,200,\\fscx100\\fscy100)"
     elif anim == "slam":
-        return f"\\fscx130\\fscy130\\t({delay_ms},{delay_ms + 80},\\fscx100\\fscy100)"
+        return "\\fscx140\\fscy140\\t(0,100,\\fscx100\\fscy100)"
     elif anim == "fade":
-        return f"\\fad({max(100, delay_ms)},0)"
+        return "\\fad(200,0)"
     return ""
 
 
@@ -133,14 +142,21 @@ def generate_caption_ass(
     frame_width: int = 1080,
     frame_height: int = 1920,
 ) -> str:
+    """Generate an ASS subtitle file for one clip.
+
+    Uses centered phrases with inline color tags for highlighted words.
+    Each phrase appears as one subtitle event, centered on screen.
+    """
     p = PRESETS.get(preset, PRESETS["Bold Pop"])
     highlight_set = set(highlight_indices)
     phrases = group_into_phrases(transcript)
 
-    y_px = int(y_position * frame_height)
+    y_margin = int((1.0 - y_position) * frame_height)
     fontname = "BubblegumSans-Regular"
     if not os.path.isfile(str(Path(__file__).parent / "fonts" / "BubblegumSans-Regular.ttf")):
         fontname = "RobotoCondensed-Bold"
+
+    bold_flag = -1 if p["bold"] else 0
 
     header = f"""[Script Info]
 Title: yt2tiktok captions
@@ -151,17 +167,13 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{fontname},{p['fontsize']},{p['text_color']},&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{p['border']},0,2,10,10,10,1
+Style: Default,{fontname},{p['fontsize']},{p['text_color']},&H000000FF,{p['outline_color']},{p['shadow_color']},{bold_flag},0,0,0,100,100,2,0,1,{p['border']},{p['shadow']},2,30,30,{y_margin},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
     events = []
-    try:
-        font = ImageFont.truetype(CAPTION_FONT_PATH, p["fontsize"])
-    except Exception:
-        font = None
 
     for phrase_indices in phrases:
         if not phrase_indices:
@@ -170,53 +182,32 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         phrase_start = transcript[phrase_indices[0]]["start"]
         phrase_end = transcript[phrase_indices[-1]]["end"]
 
-        words_in_phrase = [transcript[i]["word"] for i in phrase_indices]
-        if p["uppercase"]:
-            words_in_phrase = [w.upper() for w in words_in_phrase]
+        # Build phrase text with inline color overrides for highlighted words
+        parts = []
+        for global_idx in phrase_indices:
+            word = transcript[global_idx]["word"]
+            if p["uppercase"]:
+                word = word.upper()
 
-        phrase_text = " ".join(words_in_phrase)
-        if font:
-            total_width = font.getbbox(phrase_text)[2] - font.getbbox(phrase_text)[0]
-        else:
-            total_width = len(phrase_text) * p["fontsize"] * 0.6
-
-        x_start = (frame_width - total_width) // 2
-        x_cursor = x_start
-
-        for word_idx_in_phrase, global_idx in enumerate(phrase_indices):
-            word = transcript[global_idx]
-            display_word = word["word"].upper() if p["uppercase"] else word["word"]
-
-            if font:
-                word_width = font.getbbox(display_word)[2] - font.getbbox(display_word)[0]
-                space_width = font.getbbox(" ")[2] - font.getbbox(" ")[0] if word_idx_in_phrase > 0 else 0
+            if global_idx in highlight_set:
+                # Color override for highlighted word
+                parts.append(f"{{\\c{p['highlight_color']}}}{word}{{\\c{p['text_color']}}}")
             else:
-                word_width = len(display_word) * p["fontsize"] * 0.6
-                space_width = p["fontsize"] * 0.3 if word_idx_in_phrase > 0 else 0
+                parts.append(word)
 
-            x_cursor += space_width
-            x_pos = x_cursor
-            x_cursor += word_width
+        phrase_text = " ".join(parts)
 
-            is_highlighted = global_idx in highlight_set
-            color_tag = f"\\c{p['highlight_color']}" if is_highlighted else f"\\c{p['text_color']}"
+        # Add animation
+        anim_tag = _build_phrase_animation(p)
+        if anim_tag:
+            phrase_text = f"{{{anim_tag}}}" + phrase_text
 
-            shadow_tag = ""
-            if p["shadow_color"]:
-                shadow_tag = f"\\4c{p['shadow_color']}\\shad3"
+        start_ts = _ass_timestamp(phrase_start)
+        end_ts = _ass_timestamp(phrase_end)
 
-            anim_tag = _build_word_animation(p, word["start"], phrase_start)
-            pos_tag = f"\\pos({x_pos},{y_px})"
-            align_tag = "\\an7"
-
-            override = f"{{{pos_tag}{align_tag}{color_tag}{shadow_tag}\\bord{p['border']}\\be0{anim_tag}}}"
-
-            start_ts = _ass_timestamp(phrase_start)
-            end_ts = _ass_timestamp(phrase_end)
-
-            events.append(
-                f"Dialogue: 0,{start_ts},{end_ts},Default,,0,0,0,,{override}{display_word}"
-            )
+        events.append(
+            f"Dialogue: 0,{start_ts},{end_ts},Default,,0,0,0,,{phrase_text}"
+        )
 
     ass_content = header + "\n".join(events) + "\n"
 

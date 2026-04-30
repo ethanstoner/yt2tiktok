@@ -252,11 +252,11 @@ def process_clip(video_path: str, title: str, idx: int, total: int, start: float
     scaled_h = int(orig_h * (1080 / orig_w))
     pad_y = int((1920 - scaled_h) / 2)
     top_bar_height = pad_y
-    wrapped_title, title_fontsize, num_lines = wrap_text_to_fit(title, max_width_px=1080 - 60, max_height_px=top_bar_height)
+    wrapped_title, title_fontsize, num_lines = wrap_text_to_fit(title, max_width_px=1080 - 80, max_height_px=top_bar_height, max_fontsize=80)
     safe_font = FONT_PATH.replace("\\", "/").replace(":", "\\:")
     safe_title = wrapped_title.replace("'", "\\'")
-    bottom_fontsize = 90
-    borderw = 3
+    bottom_fontsize = 100
+    borderw = 5
     text_pad = borderw * 2 + 8
     if FONT_PATH:
         font = ImageFont.truetype(FONT_PATH, title_fontsize)
@@ -271,9 +271,10 @@ def process_clip(video_path: str, title: str, idx: int, total: int, start: float
         top_text_y = pad_y // 4
         bottom_text_y = 1920 - pad_y + pad_y // 4
     safe_ass = ""
+    fonts_dir = str(Path(__file__).parent / "fonts").replace("\\", "/").replace(":", "\\:")
     if caption_ass:
         safe_ass = caption_ass.replace("\\", "/").replace(":", "\\:")
-    part_label = f"Part {idx}/{total}"
+    part_label = f"Part {idx}"
     text_filters = (
         f"drawtext=fontfile='{safe_font}':text='{safe_title}':fontcolor=white:"
         f"fontsize={title_fontsize}:x=(w-text_w)/2:y={top_text_y}:"
@@ -286,14 +287,14 @@ def process_clip(video_path: str, title: str, idx: int, total: int, start: float
         filter_chain = (
             "[0:v]scale=540:960,gblur=sigma=30,scale=1080:1920:flags=lanczos,setsar=1[bg];"
             "[0:v]scale=1080:ih*1080/iw:force_original_aspect_ratio=decrease,setsar=1[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,{text_filters}" + (f",ass='{safe_ass}'" if caption_ass else "") + "[v]"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,{text_filters}" + (f",ass='{safe_ass}':fontsdir='{fonts_dir}'" if caption_ass else "") + "[v]"
         )
         filter_flag = "-filter_complex"
         map_args = ["-map", "[v]", "-map", "0:a?"]
     else:
         filter_chain = (
             "scale=1080:ih*1080/iw:force_original_aspect_ratio=decrease,"
-            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,{text_filters}" + (f",ass='{safe_ass}'" if caption_ass else "")
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,{text_filters}" + (f",ass='{safe_ass}':fontsdir='{fonts_dir}'" if caption_ass else "")
         )
         filter_flag = "-vf"
         map_args = []
