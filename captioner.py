@@ -19,7 +19,7 @@ PRESETS = {
         "uppercase": False,
         "bold": True,
         "tracking": 0,
-        "active_scale": 125,
+        "active_scale": 100,
     },
     "Bold Pop": {
         "text_color": "&H00FFFFFF",
@@ -383,7 +383,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     events = []
     max_width_px = int(frame_width * 0.78)
-    active_scale = p.get("active_scale", 100)
 
     for phrase_indices in phrases:
         if not phrase_indices:
@@ -392,7 +391,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         phrase_start = transcript[phrase_indices[0]]["start"]
         phrase_end = transcript[phrase_indices[-1]]["end"]
 
-        # Layer 0: stable base phrase (color changes only, no scaling)
         phrase_text, line_count = _format_base_phrase(
             transcript, phrase_indices, phrase_start, p, max_width_px,
         )
@@ -401,14 +399,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         events.append(
             f"Dialogue: 0,{_ass_timestamp(phrase_start)},{_ass_timestamp(phrase_end)},Default,,0,0,0,,{phrase_text}"
         )
-
-        # Layer 1: overlay with scale pop per word (absolute positioned, won't shift base)
-        if active_scale != 100 and line_count == 1:
-            overlay_events = _build_overlay_events(
-                transcript, phrase_indices, phrase_start, phrase_end,
-                p, frame_width, caption_zone_top,
-            )
-            events.extend(overlay_events)
 
     ass_content = header + "\n".join(events) + "\n"
 
