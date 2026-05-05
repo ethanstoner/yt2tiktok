@@ -1,10 +1,14 @@
+import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 FFMPEG_CMD = shutil.which("ffmpeg")
+
+_WHISPER_MODELS = ["large-v3-turbo", "medium", "base"]
 
 
 class TranscriptionError(Exception):
@@ -28,46 +32,73 @@ def _extract_audio(video_path: str, log_fn=None) -> str:
     return tmp.name
 
 
-_WHISPER_MODELS = ["large-v3-turbo", "medium", "base"]
+_WORKER_SCRIPT = '''
+import json, sys
+from faster_whisper import WhisperModel
+model_name, audio_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+model = WhisperModel(model_name, device="auto", compute_type="auto")
+segments, _ = model.transcribe(audio_path, word_timestamps=True)
+words = []
+for seg in segments:
+    if seg.words:
+        for w in seg.words:
+            words.append({"word": w.word.strip(), "start": round(w.start, 3),
+                          "end": round(w.end, 3), "confidence": round(w.probability, 3)})
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(words, f)
+'''
 
 
 def _transcribe_faster_whisper(audio_path: str, log_fn=None) -> list[dict]:
-    from faster_whisper import WhisperModel
+    """Try whisper models largest-first in isolated subprocesses.
+
+    If a model OOMs, the subprocess dies but the parent survives
+    and tries the next smaller model.
+    """
+    python = sys.executable
+    out_file = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+    out_file.close()
 
     for model_name in _WHISPER_MODELS:
+        if log_fn:
+            log_fn(f"Trying faster-whisper ({model_name})...")
+
+        # Write the worker script to a temp file
+        script_file = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False, encoding="utf-8")
+        script_file.write(_WORKER_SCRIPT)
+        script_file.close()
+
         try:
-            if log_fn:
-                log_fn(f"Loading faster-whisper ({model_name})...")
-            model = WhisperModel(model_name, device="auto", compute_type="auto")
+            result = subprocess.run(
+                [python, script_file.name, model_name, audio_path, out_file.name],
+                capture_output=True, text=True, timeout=600,
+            )
+
+            if result.returncode == 0 and os.path.exists(out_file.name):
+                with open(out_file.name, "r", encoding="utf-8") as f:
+                    words = json.load(f)
+                if words:
+                    if log_fn:
+                        log_fn(f"Transcribed {len(words)} words using {model_name}")
+                    return words
 
             if log_fn:
-                log_fn("Transcribing...")
-            segments, _ = model.transcribe(audio_path, word_timestamps=True)
+                reason = result.stderr.strip()[-200:] if result.stderr else f"exit code {result.returncode}"
+                log_fn(f"{model_name} failed ({reason}), trying smaller model...")
 
-            words = []
-            for segment in segments:
-                if segment.words:
-                    for w in segment.words:
-                        words.append({
-                            "word": w.word.strip(),
-                            "start": round(w.start, 3),
-                            "end": round(w.end, 3),
-                            "confidence": round(w.probability, 3),
-                        })
+        except subprocess.TimeoutExpired:
+            if log_fn:
+                log_fn(f"{model_name} timed out, trying smaller model...")
+        finally:
+            try:
+                os.unlink(script_file.name)
+            except OSError:
+                pass
 
-            if words:
-                if log_fn:
-                    log_fn(f"Transcribed {len(words)} words using {model_name}")
-                return words
-        except (MemoryError, RuntimeError) as e:
-            if log_fn:
-                log_fn(f"{model_name} failed ({e}), trying smaller model...")
-            del model
-            continue
-        except Exception as e:
-            if log_fn:
-                log_fn(f"{model_name} failed ({e}), trying smaller model...")
-            continue
+    try:
+        os.unlink(out_file.name)
+    except OSError:
+        pass
 
     raise TranscriptionError("All whisper models failed")
 
@@ -118,8 +149,6 @@ def transcribe(video_path: str, log_fn=None) -> list[dict]:
                 log_fn(f"Parakeet failed, falling back to faster-whisper: {e}")
 
         words = _transcribe_faster_whisper(audio_path, log_fn)
-        if log_fn:
-            log_fn(f"Transcription complete: {len(words)} words (faster-whisper)")
         return words
 
     finally:
