@@ -28,28 +28,48 @@ def _extract_audio(video_path: str, log_fn=None) -> str:
     return tmp.name
 
 
+_WHISPER_MODELS = ["large-v3-turbo", "medium", "base"]
+
+
 def _transcribe_faster_whisper(audio_path: str, log_fn=None) -> list[dict]:
     from faster_whisper import WhisperModel
 
-    if log_fn:
-        log_fn("Loading faster-whisper (large-v3-turbo)...")
-    model = WhisperModel("large-v3-turbo", device="auto", compute_type="auto")
+    for model_name in _WHISPER_MODELS:
+        try:
+            if log_fn:
+                log_fn(f"Loading faster-whisper ({model_name})...")
+            model = WhisperModel(model_name, device="auto", compute_type="auto")
 
-    if log_fn:
-        log_fn("Transcribing...")
-    segments, _ = model.transcribe(audio_path, word_timestamps=True)
+            if log_fn:
+                log_fn("Transcribing...")
+            segments, _ = model.transcribe(audio_path, word_timestamps=True)
 
-    words = []
-    for segment in segments:
-        if segment.words:
-            for w in segment.words:
-                words.append({
-                    "word": w.word.strip(),
-                    "start": round(w.start, 3),
-                    "end": round(w.end, 3),
-                    "confidence": round(w.probability, 3),
-                })
-    return words
+            words = []
+            for segment in segments:
+                if segment.words:
+                    for w in segment.words:
+                        words.append({
+                            "word": w.word.strip(),
+                            "start": round(w.start, 3),
+                            "end": round(w.end, 3),
+                            "confidence": round(w.probability, 3),
+                        })
+
+            if words:
+                if log_fn:
+                    log_fn(f"Transcribed {len(words)} words using {model_name}")
+                return words
+        except (MemoryError, RuntimeError) as e:
+            if log_fn:
+                log_fn(f"{model_name} failed ({e}), trying smaller model...")
+            del model
+            continue
+        except Exception as e:
+            if log_fn:
+                log_fn(f"{model_name} failed ({e}), trying smaller model...")
+            continue
+
+    raise TranscriptionError("All whisper models failed")
 
 
 def _transcribe_parakeet(audio_path: str, log_fn=None) -> list[dict]:
