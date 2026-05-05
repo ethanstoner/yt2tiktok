@@ -17,11 +17,13 @@ Built with CustomTkinter for a modern dark-themed interface.
 - **Two Visual Styles** -- Blurred background fill (9:16) or classic black bars (letterboxed), selectable per session
 - **GPU Acceleration** -- NVENC hardware encoding with automatic CPU (libx264) fallback
 - **Parallel Encoding** -- Clips encode concurrently (2-4x faster on multi-core machines)
-- **Auto-Generated Captions** -- Word-by-word animated captions burned directly into each clip via ASS subtitles
-- **5 Caption Style Presets** -- Bold Pop, Neon Glow, Impact, Pastel, and Minimal; each with distinct colors, font sizes, and animations
+- **Auto-Generated Captions** -- Word-by-word karaoke-style captions burned directly into each clip via ASS subtitles
+- **6 Caption Style Presets** -- Opus Clean, Bold Pop, Neon Glow, Impact, Pastel, and Minimal; each with distinct colors, font sizes, and animations
+- **Width-Adaptive Phrases** -- Caption grouping is based on actual text width, not word count; short words pack together, long words get more space, and single-word orphans are always merged
 - **Caption Preview** -- Interactive preview window with drag-to-reposition; changes persist to config
-- **Speech-to-Text** -- Transcription via faster-whisper (large-v3-turbo); upgrades automatically to NVIDIA Parakeet (1.1B) when a CUDA GPU and NeMo are available
-- **Keyword Highlighting** -- Heuristic detection highlights notable words; optionally upgraded with LLM-driven selection
+- **Hybrid Transcription** -- YouTube captions (instant, accurate) with automatic whisper fill-in for censored words; falls back to local faster-whisper (large-v3-turbo > medium > base) for local files or when captions are unavailable
+- **Uncensored Captions** -- YouTube auto-captions censor profanity; yt2tiktok detects censored slots and fills them in with whisper so captions match what's actually said
+- **Keyword Highlighting** -- Per-clip LLM-driven keyword detection highlights the most impactful words; falls back to heuristic detection when no LLM is configured
 - **Smart Cut Modes** -- Natural Pause (silence-based boundaries) or Cliffhanger (LLM selects a mid-sentence hook point)
 - **Multi-Provider LLM** -- Groq, OpenAI, Gemini, Claude, Ollama, or any OpenAI-compatible endpoint
 - **Scheduled Uploads** -- Selenium-driven TikTok uploads with configurable start time and interval between posts
@@ -75,23 +77,31 @@ When both NeMo and a CUDA device are detected at runtime, the app automatically 
 ## How It Works
 
 ```
-YouTube URL ──> yt-dlp download ──> faster-whisper transcription
-                                         │
-                              ┌──────────┴──────────┐
-                          Natural Pause          Cliffhanger
-                         (silence gaps)        (LLM hook point)
-                              └──────────┬──────────┘
-                                         │
-                                  FFmpeg split (60-70s)
-                                  [parallel encoding]
-                                         │
-                              ┌──────────┴──────────┐
-                              │  Blurred Background  │  Black Bars
-                              │  (blur + overlay)    │  (pad 9:16)
-                              └──────────┬──────────┘
-                                         │
-                              ASS captions burned in
-                              (word-by-word animation)
+YouTube URL ──> yt-dlp download
+                    │
+        ┌───────────┴───────────┐
+   YouTube captions          Local whisper
+   (instant, accurate)       (fallback: large > medium > base)
+        │                       │
+        └───────┬───────────────┘
+                │
+     Censored words? ──> whisper fills gaps
+                │
+     ┌──────────┴──────────┐
+ Natural Pause          Cliffhanger
+ (silence gaps)        (LLM hook point)
+     └──────────┬──────────┘
+                │
+         FFmpeg split (60-70s)
+         [parallel encoding]
+                │
+     ┌──────────┴──────────┐
+     │  Blurred Background  │  Black Bars
+     │  (blur + overlay)    │  (pad 9:16)
+     └──────────┬──────────┘
+                │
+     ASS captions burned in
+     (word-by-word karaoke)
                                          │
                               Selenium ──> TikTok upload
                               (scheduled, with retries)
