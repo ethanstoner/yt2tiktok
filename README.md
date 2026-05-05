@@ -4,7 +4,11 @@ A desktop application that downloads YouTube videos, splits them into 60-70 seco
 
 Built with CustomTkinter for a modern dark-themed interface.
 
-<!-- Add a screenshot: ![yt2tiktok](assets/screenshot.png) -->
+![yt2tiktok](assets/hero.png)
+
+### Captions in action
+
+![caption demo](assets/captions-demo.gif)
 
 ## Features
 
@@ -30,13 +34,16 @@ Built with CustomTkinter for a modern dark-themed interface.
 
 ## Caption Presets
 
+All presets use Fredoka One with word-by-word karaoke-style highlighting. The active word snaps to the highlight color; keywords detected by the LLM get extra emphasis.
+
 | Preset | Highlight Color | Animation | Font Size | Uppercase |
 |--------|----------------|-----------|-----------|-----------|
-| Bold Pop | Blue (`#F7C204`) | Scale pop | 48 | No |
-| Neon Glow | Yellow (`#FFF000`) | Bounce + glow shadow | 46 | No |
-| Impact | Red-blue (`#3B3BFF`) | Slam in | 52 | Yes |
-| Pastel | Lavender (`#DB8FFF`) | Fade | 44 | No |
-| Minimal | Light gray (`#CCCCCC`) | Fade | 36 | No |
+| Opus Clean | Green | None | 72 | No |
+| Bold Pop | Green | Fade | 68 | No |
+| Neon Glow | Cyan | Bounce | 66 | No |
+| Impact | Red | Slam | 72 | Yes |
+| Pastel | Pink | Fade | 64 | No |
+| Minimal | Warm yellow | Fade | 56 | No |
 
 ## Requirements
 
@@ -156,7 +163,7 @@ All settings are saved in-app and persist to `~/.yt2tiktok.json`:
 | Output directory | `./clips/` |
 | Clip style | Blurred |
 | Cut mode | Natural Pause |
-| Caption preset | Bold Pop |
+| Caption preset | Opus Clean |
 | Captions enabled | Yes |
 | Caption vertical position | 70% from top |
 | LLM provider | (none) |
@@ -180,7 +187,7 @@ yt2tiktok/
 ├── config.py            # Thread-safe JSON config persistence (~/.yt2tiktok.json)
 ├── requirements.txt
 ├── requirements-parakeet.txt   # Optional: NeMo + NVIDIA Parakeet
-├── fonts/               # Bundled caption font (BubblegumSans, fallback RobotoCondensed)
+├── fonts/               # Bundled caption fonts (FredokaOne, Montserrat, BubblegumSans, RobotoCondensed)
 └── clips/               # Output directory (gitignored)
 ```
 
