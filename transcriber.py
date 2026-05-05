@@ -159,6 +159,8 @@ def _fetch_youtube_captions(url: str, log_fn=None) -> list[dict]:
     data = json.loads(urllib.request.urlopen(json3_url).read())
     events = data.get("events", [])
 
+    import re
+    has_censored = False
     words = []
     for ev in events:
         segs = ev.get("segs")
@@ -170,8 +172,10 @@ def _fetch_youtube_captions(url: str, log_fn=None) -> list[dict]:
             text = seg.get("utf8", "").strip()
             if not text or text == "\n":
                 continue
+            # Detect YouTube censorship (e.g. [__], [Music] is fine to skip)
+            if re.search(r"\[[\W_]+\]", text):
+                has_censored = True
             # Clean up YouTube caption artifacts
-            import re
             text = re.sub(r"^>>+\s*", "", text).strip()  # remove >> speaker markers
             text = re.sub(r"\[.*?\]", "", text).strip()   # remove [music] [applause] etc
             if not text:
@@ -198,6 +202,11 @@ def _fetch_youtube_captions(url: str, log_fn=None) -> list[dict]:
 
     if not words:
         raise TranscriptionError("YouTube captions had no usable words")
+
+    if has_censored:
+        if log_fn:
+            log_fn("YouTube captions contain censored words, falling back to local transcription...")
+        raise TranscriptionError("YouTube captions censored — using local transcription for accuracy")
 
     if log_fn:
         log_fn(f"Got {len(words)} words from YouTube captions")
