@@ -130,7 +130,92 @@ def _transcribe_parakeet(audio_path: str, log_fn=None) -> list[dict]:
     return words
 
 
-def transcribe(video_path: str, log_fn=None) -> list[dict]:
+def _fetch_youtube_captions(url: str, log_fn=None) -> list[dict]:
+    """Download word-level timestamps from YouTube's auto-captions (JSON3 format)."""
+    import yt_dlp
+    import urllib.request
+
+    if log_fn:
+        log_fn("Fetching YouTube captions...")
+
+    ydl_opts = {"quiet": True, "skip_download": True}
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    # Prefer manual subs, fall back to auto
+    subs = info.get("subtitles", {})
+    auto_subs = info.get("automatic_captions", {})
+    en_subs = subs.get("en", []) or auto_subs.get("en", [])
+
+    json3_url = None
+    for s in en_subs:
+        if s.get("ext") == "json3":
+            json3_url = s["url"]
+            break
+
+    if not json3_url:
+        raise TranscriptionError("No English captions available")
+
+    data = json.loads(urllib.request.urlopen(json3_url).read())
+    events = data.get("events", [])
+
+    words = []
+    for ev in events:
+        segs = ev.get("segs")
+        if not segs:
+            continue
+        base_ms = ev.get("tStartMs", 0)
+        dur_ms = ev.get("dDurationMs", 0)
+        for seg in segs:
+            text = seg.get("utf8", "").strip()
+            if not text or text == "\n":
+                continue
+            # Clean up YouTube caption artifacts
+            import re
+            text = re.sub(r"^>>+\s*", "", text).strip()  # remove >> speaker markers
+            text = re.sub(r"\[.*?\]", "", text).strip()   # remove [music] [applause] etc
+            if not text:
+                continue
+            offset_ms = seg.get("tOffsetMs", 0)
+            start_ms = base_ms + offset_ms
+            start_s = round(start_ms / 1000, 3)
+            words.append({
+                "word": text,
+                "start": start_s,
+                "end": start_s,  # placeholder, will fix below
+                "confidence": 1.0,
+            })
+
+    # Fix end times: each word ends when the next one starts, capped at 1.5s
+    for i in range(len(words) - 1):
+        next_start = words[i + 1]["start"]
+        words[i]["end"] = round(min(next_start, words[i]["start"] + 1.5), 3)
+    if words:
+        words[-1]["end"] = round(words[-1]["start"] + 0.3, 3)
+
+    # Filter out empty words
+    words = [w for w in words if w["word"]]
+
+    if not words:
+        raise TranscriptionError("YouTube captions had no usable words")
+
+    if log_fn:
+        log_fn(f"Got {len(words)} words from YouTube captions")
+    return words
+
+
+def transcribe(video_path: str, url: str = None, log_fn=None) -> list[dict]:
+    # Try YouTube captions first (most accurate, no local compute)
+    if url:
+        try:
+            words = _fetch_youtube_captions(url, log_fn)
+            if log_fn:
+                log_fn(f"Transcription complete: {len(words)} words (YouTube captions)")
+            return words
+        except Exception as e:
+            if log_fn:
+                log_fn(f"YouTube captions unavailable ({e}), using local transcription...")
+
     audio_path = _extract_audio(video_path, log_fn)
 
     try:

@@ -69,7 +69,7 @@ def clipper_worker(
         if captions_enabled or cut_mode != "random":
             transcription_status.set("Transcribing...")
             try:
-                transcript = transcriber.transcribe(video_path, log_fn=log)
+                transcript = transcriber.transcribe(video_path, url=url if url else None, log_fn=log)
                 transcription_status.set(f"{len(transcript)} words detected")
                 transcript_var.set(str(len(transcript)))
 
