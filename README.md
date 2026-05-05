@@ -187,18 +187,20 @@ All settings are saved in-app and persist to `~/.yt2tiktok.json`:
 
 ```
 yt2tiktok/
-├── main.py              # CustomTkinter GUI and thread management
-├── clipper.py           # YouTube download, FFmpeg splitting, parallel encoding
-├── uploader.py          # TikTok cookie auth, Selenium upload, scheduling
-├── transcriber.py       # Speech-to-text (faster-whisper + optional Parakeet)
-├── captioner.py         # ASS subtitle generation, 5 presets, keyword detection
-├── llm_provider.py      # Multi-provider LLM client (Groq, OpenAI, Gemini, Claude, Ollama)
-├── preview.py           # Caption preview window with drag-to-reposition
-├── config.py            # Thread-safe JSON config persistence (~/.yt2tiktok.json)
+├── main.py                    # CustomTkinter GUI and thread management
+├── src/
+│   ├── clipper.py             # YouTube download, FFmpeg splitting, parallel encoding
+│   ├── uploader.py            # TikTok cookie auth, Selenium upload, scheduling (untested)
+│   ├── transcriber.py         # Hybrid YouTube captions + whisper fallback
+│   ├── captioner.py           # ASS subtitle generation, 6 presets, keyword detection
+│   ├── llm_provider.py        # Multi-provider LLM client (Groq, OpenAI, Gemini, Claude, Ollama)
+│   ├── preview.py             # Caption preview window with drag-to-reposition
+│   └── config.py              # Thread-safe JSON config persistence (~/.yt2tiktok.json)
+├── fonts/                     # Bundled caption fonts (FredokaOne, Montserrat, BubblegumSans, RobotoCondensed)
+├── assets/                    # README images and demo GIF
 ├── requirements.txt
-├── requirements-parakeet.txt   # Optional: NeMo + NVIDIA Parakeet
-├── fonts/               # Bundled caption fonts (FredokaOne, Montserrat, BubblegumSans, RobotoCondensed)
-└── clips/               # Output directory (gitignored)
+├── requirements-parakeet.txt  # Optional: NeMo + NVIDIA Parakeet
+└── clips/                     # Output directory (gitignored)
 ```
 
 ## Troubleshooting

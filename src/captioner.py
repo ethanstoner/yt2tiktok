@@ -4,10 +4,10 @@ from PIL import ImageFont
 
 # Font priority: FredokaOne (rounded bubbly) > Montserrat > BubblegumSans > Roboto
 _FONT_CANDIDATES = [
-    Path(__file__).parent / "fonts" / "FredokaOne-Regular.ttf",
-    Path(__file__).parent / "fonts" / "Montserrat-ExtraBold.ttf",
-    Path(__file__).parent / "fonts" / "BubblegumSans-Regular.ttf",
-    Path(__file__).parent / "fonts" / "RobotoCondensed-Bold.ttf",
+    Path(__file__).parent.parent / "fonts" / "FredokaOne-Regular.ttf",
+    Path(__file__).parent.parent / "fonts" / "Montserrat-ExtraBold.ttf",
+    Path(__file__).parent.parent / "fonts" / "BubblegumSans-Regular.ttf",
+    Path(__file__).parent.parent / "fonts" / "RobotoCondensed-Bold.ttf",
 ]
 CAPTION_FONT_PATH = ""
 for _f in _FONT_CANDIDATES:

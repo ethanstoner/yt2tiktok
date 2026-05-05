@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import ImageFont
 
-CLIPS_DIR = Path(__file__).parent / "clips"
+CLIPS_DIR = Path(__file__).parent.parent / "clips"
 FFMPEG_CMD = shutil.which("ffmpeg")
 FFPROBE_CMD = shutil.which("ffprobe")
 
@@ -19,10 +19,10 @@ WARN_DURATION = 7200
 WARN_CLIPS = 30
 
 def _find_font() -> str:
-    from captioner import CAPTION_FONT_PATH
+    from src.captioner import CAPTION_FONT_PATH
     if CAPTION_FONT_PATH:
         return CAPTION_FONT_PATH
-    bundled = Path(__file__).parent / "fonts" / "RobotoCondensed-Bold.ttf"
+    bundled = Path(__file__).parent.parent / "fonts" / "RobotoCondensed-Bold.ttf"
     if bundled.is_file():
         return str(bundled)
     return ""
@@ -264,7 +264,7 @@ def process_clip(video_path: str, title: str, idx: int, total: int, start: float
         top_text_y = pad_y // 4
         bottom_text_y = 1920 - pad_y + pad_y // 4
     safe_ass = ""
-    fonts_dir = str(Path(__file__).parent / "fonts").replace("\\", "/").replace(":", "\\:")
+    fonts_dir = str(Path(__file__).parent.parent / "fonts").replace("\\", "/").replace(":", "\\:")
     if caption_ass:
         safe_ass = caption_ass.replace("\\", "/").replace(":", "\\:")
     part_label = f"Part {idx}"

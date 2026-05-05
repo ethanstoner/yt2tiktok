@@ -3,7 +3,7 @@ import datetime
 import calendar
 import time
 from pathlib import Path
-import config as cfg
+from src import config as cfg
 
 # ─── TikTok Selector Constants ───────────────────────────────────────────
 SELECTORS = {
@@ -30,7 +30,7 @@ RETRY_DELAY = 30
 QUIET_HOURS_START = 23
 QUIET_HOURS_END = 8
 MAX_SCHEDULE_DAYS = 10
-DEBUG_DIR = Path(__file__).parent / "debug"
+DEBUG_DIR = Path(__file__).parent.parent / "debug"
 
 COOKIE_SEARCH_DIRS = [
     Path.cwd(),

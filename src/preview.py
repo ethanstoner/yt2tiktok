@@ -6,7 +6,7 @@ import customtkinter as ctk
 from PIL import Image, ImageTk, ImageDraw, ImageFont
 from pathlib import Path
 
-import captioner
+from src import captioner
 
 FFMPEG_CMD = shutil.which("ffmpeg")
 

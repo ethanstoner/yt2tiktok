@@ -5,13 +5,13 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from pathlib import Path
 
-import clipper
-import uploader
-import transcriber
-import captioner
-import config as cfg
-from llm_provider import LLMProvider, PROVIDERS
-from preview import CaptionPreview
+from src import clipper
+from src import uploader
+from src import transcriber
+from src import captioner
+from src import config as cfg
+from src.llm_provider import LLMProvider, PROVIDERS
+from src.preview import CaptionPreview
 
 log_queue: queue.Queue[str] = queue.Queue()
 progress_queue: queue.Queue[str] = queue.Queue()
