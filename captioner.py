@@ -2,11 +2,12 @@ import os
 from pathlib import Path
 from PIL import ImageFont
 
-# Font priority: Montserrat ExtraBold (OpusClip style) > RobotoCondensed > BubblegumSans
+# Font priority: FredokaOne (rounded bubbly) > Montserrat > BubblegumSans > Roboto
 _FONT_CANDIDATES = [
+    Path(__file__).parent / "fonts" / "FredokaOne-Regular.ttf",
     Path(__file__).parent / "fonts" / "Montserrat-ExtraBold.ttf",
-    Path(__file__).parent / "fonts" / "RobotoCondensed-Bold.ttf",
     Path(__file__).parent / "fonts" / "BubblegumSans-Regular.ttf",
+    Path(__file__).parent / "fonts" / "RobotoCondensed-Bold.ttf",
 ]
 CAPTION_FONT_PATH = ""
 for _f in _FONT_CANDIDATES:
@@ -22,12 +23,12 @@ PRESETS = {
         "border": 7,
         "shadow": 2,
         "shadow_color": "&HA0000000",
-        "fontsize": 64,
+        "fontsize": 72,
         "animation": "none",
         "uppercase": False,
         "bold": True,
         "tracking": 1,
-        "active_scale": 120,
+        "active_scale": 110,
     },
     "Bold Pop": {
         "text_color": "&H00FFFFFF",
@@ -41,7 +42,7 @@ PRESETS = {
         "uppercase": False,
         "bold": True,
         "tracking": 1,
-        "active_scale": 115,
+        "active_scale": 110,
     },
     "Neon Glow": {
         "text_color": "&H00FFFFFF",
@@ -55,7 +56,7 @@ PRESETS = {
         "uppercase": False,
         "bold": True,
         "tracking": 1,
-        "active_scale": 115,
+        "active_scale": 110,
     },
     "Impact": {
         "text_color": "&H00FFFFFF",
@@ -83,7 +84,7 @@ PRESETS = {
         "uppercase": False,
         "bold": True,
         "tracking": 1,
-        "active_scale": 115,
+        "active_scale": 110,
     },
     "Minimal": {
         "text_color": "&H00FFFFFF",
@@ -104,26 +105,70 @@ PRESETS = {
 
 def group_into_phrases(
     transcript: list[dict],
-    max_words: int = 4,
-    gap_threshold: float = 0.35,
-    max_duration: float = 2.8,
+    gap_threshold: float = 0.40,
+    max_duration: float = 3.2,
+    frame_width: int = 1080,
+    fontsize: int = 72,
 ) -> list[list[int]]:
+    """Group transcript words into display phrases based on actual text width.
+
+    No hard word count limit — short words like 'of' 'it' 'a' pack tightly,
+    while long words like 'calibration' take more space. Purely width-driven.
+    """
     if not transcript:
         return []
+
+    font = _load_font(fontsize)
+    max_text_px = int(frame_width * 0.88)
+
+    def _phrase_text(indices):
+        return " ".join(transcript[i]["word"] for i in indices)
+
+    def _fits(indices):
+        return _measure_text(_phrase_text(indices), font) <= max_text_px
+
+    # First pass: group by timing and text width
     phrases = []
     current_phrase = [0]
     for i in range(1, len(transcript)):
         gap = transcript[i]["start"] - transcript[i - 1]["end"]
         phrase_start = transcript[current_phrase[0]]["start"]
         phrase_duration = transcript[i]["end"] - phrase_start
-        if gap > gap_threshold or len(current_phrase) >= max_words or phrase_duration >= max_duration:
+        candidate = current_phrase + [i]
+
+        too_wide = not _fits(candidate)
+        too_long = gap > gap_threshold or phrase_duration >= max_duration
+
+        if too_wide or too_long:
             phrases.append(current_phrase)
             current_phrase = [i]
         else:
             current_phrase.append(i)
     if current_phrase:
         phrases.append(current_phrase)
-    return phrases
+
+    # Second pass: never leave single-word orphans
+    if len(phrases) <= 1:
+        return phrases
+
+    merged = []
+    i = 0
+    while i < len(phrases):
+        phrase = phrases[i]
+        if len(phrase) == 1:
+            if merged and _fits(merged[-1] + phrase):
+                merged[-1] = merged[-1] + phrase
+            elif i + 1 < len(phrases) and _fits(phrase + phrases[i + 1]):
+                phrases[i + 1] = phrase + phrases[i + 1]
+            elif merged:
+                merged[-1] = merged[-1] + phrase
+            else:
+                merged.append(phrase)
+        else:
+            merged.append(phrase)
+        i += 1
+
+    return merged
 
 
 def detect_keywords_heuristic(transcript: list[dict], max_per_phrase: int = 5) -> list[int]:
@@ -185,157 +230,59 @@ def _measure_text(text: str, font) -> int:
     return bbox[2] - bbox[0]
 
 
-def _wrap_phrase_words(words: list[str], font, max_width_px: int, max_lines: int = 2) -> str:
-    if not words:
-        return ""
-    lines: list[str] = []
-    current: list[str] = []
-    for word in words:
-        candidate_words = current + [word]
-        candidate = " ".join(candidate_words)
-        if current and _measure_text(candidate, font) > max_width_px:
-            lines.append(" ".join(current))
-            current = [word]
-        else:
-            current = candidate_words
-    if current:
-        lines.append(" ".join(current))
-    if len(lines) <= max_lines:
-        return r"\N".join(lines)
-    midpoint = (len(words) + 1) // 2
-    best_layout = None
-    best_score = None
-    for split in range(max(1, midpoint - 2), min(len(words), midpoint + 2) + 1):
-        left = " ".join(words[:split])
-        right = " ".join(words[split:])
-        score = max(_measure_text(left, font), _measure_text(right, font))
-        if best_score is None or score < best_score:
-            best_score = score
-            best_layout = (left, right)
-    if best_layout:
-        return r"\N".join(best_layout)
-    return r"\N".join(lines[:max_lines])
 
-
-def _format_base_phrase(
+def _build_phrase_events(
     transcript: list[dict],
     phrase_indices: list[int],
-    phrase_start: float,
     preset: dict,
-    max_width_px: int,
-) -> tuple[str, int]:
-    """Build the STABLE base layer: color-only transforms, no scaling."""
-    font = _load_font(preset["fontsize"])
-
-    plain_words = [
-        transcript[i]["word"].upper() if preset["uppercase"] else transcript[i]["word"]
-        for i in phrase_indices
-    ]
-    wrapped_plain = _wrap_phrase_words(plain_words, font, max_width_px=max_width_px)
-    line_count = len(wrapped_plain.split(r"\N"))
-
-    markup_words = []
-    for pos, global_idx in enumerate(phrase_indices):
-        word = transcript[global_idx]["word"]
-        if preset["uppercase"]:
-            word = word.upper()
-
-        word_start = transcript[global_idx]["start"] - phrase_start
-        if pos + 1 < len(phrase_indices):
-            word_end = transcript[phrase_indices[pos + 1]]["start"] - phrase_start
-        else:
-            word_end = transcript[global_idx]["end"] - phrase_start
-
-        start_ms = max(0, int(round(word_start * 1000)))
-        end_ms = max(start_ms + 10, int(round(word_end * 1000)))
-
-        word = (
-            "{"
-            f"\\c{preset['text_color']}"
-            f"\\t({start_ms},{end_ms},\\c{preset['highlight_color']})"
-            f"\\t({end_ms},{end_ms + 10},\\c{preset['text_color']})"
-            "}"
-            f"{word}"
-        )
-        markup_words.append(word)
-
-    markup_iter = iter(markup_words)
-    wrapped_markup = []
-    for line in wrapped_plain.split(r"\N"):
-        n_words = len(line.split())
-        wrapped_markup.append(" ".join(next(markup_iter) for _ in range(n_words)))
-    phrase_text = r"\N".join(wrapped_markup)
-
-    anim_tag = _build_phrase_animation(preset)
-    spacing = preset.get("tracking", 0)
-    if anim_tag or spacing:
-        phrase_text = "{" + anim_tag + (f"\\fsp{spacing}" if spacing else "") + "}" + phrase_text
-    return phrase_text, line_count
-
-
-def _build_scale_events(
-    transcript: list[dict],
-    phrase_indices: list[int],
-    phrase_start: float,
-    phrase_end: float,
-    preset: dict,
-    frame_width: int,
-    y_px: int,
+    center_x: int,
+    y_pos: int,
+    highlight_indices: list[int] = None,
 ) -> list[str]:
-    """Build per-word scale-pop events on layer 1.
+    """Build a single Dialogue event per phrase with per-word color highlights.
 
-    Uses the same centered phrase but makes all non-active words fully
-    transparent. Only the active word is visible and scaled. Since the
-    invisible words act as spacers, the visible word stays in the correct
-    horizontal position relative to the stable base layer underneath.
+    Karaoke style: the active word snaps to highlight_color, then back to white.
     """
-    active_scale = preset.get("active_scale", 100)
-    if active_scale == 100:
-        return []
-
-    events = []
+    anim_tag = _build_phrase_animation(preset)
 
     plain_words = [
         transcript[i]["word"].upper() if preset["uppercase"] else transcript[i]["word"]
         for i in phrase_indices
     ]
 
-    for active_pos in range(len(phrase_indices)):
-        global_idx = phrase_indices[active_pos]
-        word_start = transcript[global_idx]["start"]
-        if active_pos + 1 < len(phrase_indices):
-            word_end = transcript[phrase_indices[active_pos + 1]]["start"]
+    phrase_start = transcript[phrase_indices[0]]["start"]
+    phrase_end = transcript[phrase_indices[-1]]["end"]
+
+    parts = []
+    first_word = True
+    for pos, global_idx in enumerate(phrase_indices):
+        word = plain_words[pos]
+        ws = transcript[global_idx]["start"] - phrase_start
+        if pos + 1 < len(phrase_indices):
+            we = transcript[phrase_indices[pos + 1]]["start"] - phrase_start
         else:
-            word_end = transcript[global_idx]["end"]
+            we = transcript[global_idx]["end"] - phrase_start
+        ws_ms = max(0, int(round(ws * 1000)))
+        we_ms = max(ws_ms + 10, int(round(we * 1000)))
 
-        # Build phrase: all words invisible except active one (visible + scaled)
-        parts = []
-        for pos, w in enumerate(plain_words):
-            if pos == active_pos:
-                pop_ms = 80
-                parts.append(
-                    "{"
-                    f"\\alpha&H00&"
-                    f"\\c{preset['highlight_color']}"
-                    f"\\fscx100\\fscy100"
-                    f"\\t(0,{pop_ms},\\fscx{active_scale}\\fscy{active_scale})"
-                    f"\\t({pop_ms},{pop_ms + 70},\\fscx100\\fscy100)"
-                    "}"
-                    f"{w}"
-                )
-            else:
-                parts.append("{\\alpha&HFF&}" + w)
+        tags = ""
+        if first_word:
+            tags += f"\\an5\\pos({center_x},{y_pos})"
+            if anim_tag:
+                tags += anim_tag
+            first_word = False
 
-        phrase_text = " ".join(parts)
+        tags += f"\\c{preset['text_color']}"
+        # Snap to highlight color instantly, then snap back
+        tags += f"\\t({ws_ms},{ws_ms + 1},\\c{preset['highlight_color']})"
+        tags += f"\\t({we_ms},{we_ms + 1},\\c{preset['text_color']})"
 
-        # Add the same invisible spacer line as the base layer so both
-        # layers render at the same vertical position
-        spacer = r"{\alpha&HFF&}_\N{\alpha&H00&}"
-        events.append(
-            f"Dialogue: 1,{_ass_timestamp(word_start)},{_ass_timestamp(word_end)},Default,,0,0,0,,{spacer}{phrase_text}"
-        )
+        parts.append("{" + tags + "}" + word)
 
-    return events
+    text = " ".join(parts)
+    return [
+        f"Dialogue: 0,{_ass_timestamp(phrase_start)},{_ass_timestamp(phrase_end)},Default,,0,0,0,,{text}"
+    ]
 
 
 def generate_caption_ass(
@@ -349,24 +296,29 @@ def generate_caption_ass(
 ) -> str:
     """Generate an ASS subtitle file for one clip.
 
-    Two-layer approach:
-    - Layer 0: Stable centered phrase with color-only word highlight (no scaling, no shaking)
-    - Layer 1: Per-word scale-pop overlay using absolute positioning (only the active word grows)
+    Hybrid approach for natural spacing + scale-pop highlights:
+    - Layer 0: single Dialogue event per phrase with inline color transforms
+    - Layer 1: per-word overlay for scale-pop (only the active word visible)
     """
     p = PRESETS.get(preset, PRESETS["Opus Clean"])
-    phrases = group_into_phrases(transcript)
+    phrases = group_into_phrases(transcript, frame_width=frame_width, fontsize=p["fontsize"])
 
     line_height = p["fontsize"] + int(p["fontsize"] * 0.30)
-    caption_zone_top = int(y_position * frame_height) - (line_height * 2)
-    caption_zone_top = max(1260, min(1360, caption_zone_top))
-    fontname = Path(CAPTION_FONT_PATH).stem
+    y_pos = int(y_position * frame_height)
+    # Allow captions from mid-frame down into the lower blurred bar zone
+    y_min = int(frame_height * 0.40)
+    y_max = int(frame_height * 0.85)
+    y_pos = max(y_min, min(y_max, y_pos))
+    # Use the font's internal family name (libass matches on this, not filename)
+    try:
+        _font_meta = ImageFont.truetype(CAPTION_FONT_PATH, 10)
+        fontname = _font_meta.getname()[0]
+    except Exception:
+        fontname = Path(CAPTION_FONT_PATH).stem
 
     bold_flag = -1 if p["bold"] else 0
+    center_x = frame_width // 2
 
-    # MarginV in ASS with Alignment=8 (bottom-center) is measured from the BOTTOM
-    # But we use Alignment=8 which is top-center, so MarginV is from top
-    # Actually ASS Alignment: 1-3=bottom, 4-6=middle, 7-9=top
-    # Alignment=8 means top-center. MarginV = distance from top.
     header = f"""[Script Info]
 Title: yt2tiktok captions
 ScriptType: v4.00+
@@ -376,46 +328,23 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{fontname},{p['fontsize']},{p['text_color']},&H000000FF,{p['outline_color']},{p['shadow_color']},{bold_flag},0,0,0,100,100,{p.get('tracking', 0)},0,1,{p['border']},{p['shadow']},8,70,70,{caption_zone_top},1
+Style: Default,{fontname},{p['fontsize']},{p['text_color']},&H000000FF,{p['outline_color']},{p['shadow_color']},{bold_flag},0,0,0,100,100,0,0,1,{p['border']},{p['shadow']},5,0,0,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
     events = []
-    max_width_px = int(frame_width * 0.78)
-    active_scale = p.get("active_scale", 100)
-
-    # Calculate Y pixel position for overlay events
-    # For an8 alignment with MarginV=caption_zone_top, the text baseline is at
-    # caption_zone_top + fontsize (approx). For an5 overlay we want the center
-    # of the word at the same vertical position.
-    overlay_y = caption_zone_top + p["fontsize"] // 2 + p["fontsize"]
 
     for phrase_indices in phrases:
         if not phrase_indices:
             continue
 
-        phrase_start = transcript[phrase_indices[0]]["start"]
-        phrase_end = transcript[phrase_indices[-1]]["end"]
-
-        # Layer 0: stable base phrase (color changes only)
-        phrase_text, line_count = _format_base_phrase(
-            transcript, phrase_indices, phrase_start, p, max_width_px,
+        phrase_events = _build_phrase_events(
+            transcript, phrase_indices, p, center_x, y_pos,
+            highlight_indices=highlight_indices,
         )
-        if line_count == 1:
-            phrase_text = r"{\alpha&HFF&}_\N{\alpha&H00&}" + phrase_text
-        events.append(
-            f"Dialogue: 0,{_ass_timestamp(phrase_start)},{_ass_timestamp(phrase_end)},Default,,0,0,0,,{phrase_text}"
-        )
-
-        # Layer 1: scale-pop overlay per word (only for single-line phrases)
-        if active_scale != 100 and line_count == 1:
-            overlay_events = _build_scale_events(
-                transcript, phrase_indices, phrase_start, phrase_end,
-                p, frame_width, overlay_y,
-            )
-            events.extend(overlay_events)
+        events.extend(phrase_events)
 
     ass_content = header + "\n".join(events) + "\n"
 

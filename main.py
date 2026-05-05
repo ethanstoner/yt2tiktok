@@ -73,12 +73,6 @@ def clipper_worker(
                 transcription_status.set(f"{len(transcript)} words detected")
                 transcript_var.set(str(len(transcript)))
 
-                if llm_instance and llm_instance.is_available():
-                    highlight_indices = captioner.detect_keywords_llm(transcript, llm_instance)
-                else:
-                    highlight_indices = captioner.detect_keywords_heuristic(transcript)
-                highlight_var.set(",".join(str(i) for i in highlight_indices))
-
                 preview_btn.configure(state="normal")
             except Exception as e:
                 log(f"Transcription failed: {e}")
@@ -97,10 +91,15 @@ def clipper_worker(
             os.makedirs(target_dir, exist_ok=True)
             for i, (cut_start, cut_dur) in enumerate(cuts, 1):
                 cut_end = cut_start + cut_dur
-                clip_transcript, clip_highlights = captioner.slice_transcript(
-                    transcript, cut_start, cut_end, highlight_indices,
+                clip_transcript, _ = captioner.slice_transcript(
+                    transcript, cut_start, cut_end, [],
                 )
                 if clip_transcript:
+                    # Detect keywords per-clip so every clip gets highlights
+                    if llm and llm.is_available():
+                        clip_highlights = captioner.detect_keywords_llm(clip_transcript, llm)
+                    else:
+                        clip_highlights = captioner.detect_keywords_heuristic(clip_transcript)
                     ass_path = os.path.join(target_dir, f"_caption_{i}.ass")
                     captioner.generate_caption_ass(
                         clip_transcript, preset_name, y_position,
@@ -112,6 +111,7 @@ def clipper_worker(
             video_path, title, mode=mode.lower(),
             cut_mode=cut_mode, transcript=transcript, llm=llm,
             caption_ass_map=caption_ass_map,
+            cuts=cuts,
             log_fn=log, progress_fn=progress,
         )
 
@@ -232,7 +232,7 @@ def build_gui():
     preset_var = ctk.StringVar(value="Opus Clean")
     ctk.CTkOptionMenu(preset_frame, values=list(captioner.PRESETS.keys()), variable=preset_var).pack(side="left", padx=5)
 
-    caption_y_var = [0.76]
+    caption_y_var = [0.73]
 
     transcription_status = ctk.StringVar(value="Waiting...")
     ctk.CTkLabel(main_frame, textvariable=transcription_status, text_color="gray").pack(anchor="w", padx=10)

@@ -19,19 +19,12 @@ WARN_DURATION = 7200
 WARN_CLIPS = 30
 
 def _find_font() -> str:
-    candidates = []
-    system = platform.system()
-    if system == "Windows":
-        candidates.append(r"C:\Windows\Fonts\arialbd.ttf")
-    elif system == "Darwin":
-        candidates.append("/Library/Fonts/Arial Bold.ttf")
-    else:
-        candidates.append("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+    from captioner import CAPTION_FONT_PATH
+    if CAPTION_FONT_PATH:
+        return CAPTION_FONT_PATH
     bundled = Path(__file__).parent / "fonts" / "RobotoCondensed-Bold.ttf"
-    candidates.append(str(bundled))
-    for path in candidates:
-        if os.path.isfile(path):
-            return path
+    if bundled.is_file():
+        return str(bundled)
     return ""
 
 FONT_PATH = _find_font()
@@ -328,6 +321,7 @@ def split_video(
     llm=None,
     parallel: int = None,
     caption_ass_map: dict = None,
+    cuts: list[tuple[float, float]] = None,
     log_fn=None,
     progress_fn=None,
 ) -> tuple[str, int]:
@@ -335,14 +329,16 @@ def split_video(
     import threading as _threading
 
     target_dir = str(CLIPS_DIR / title)
-    duration = get_video_duration(video_path)
 
-    if cut_mode != "random" and transcript is None:
-        if log_fn:
-            log_fn("Transcription unavailable, using random cuts")
-        cut_mode = "random"
-
-    clips = calculate_cut_points(duration, cut_mode, transcript, llm)
+    if cuts is None:
+        duration = get_video_duration(video_path)
+        if cut_mode != "random" and transcript is None:
+            if log_fn:
+                log_fn("Transcription unavailable, using random cuts")
+            cut_mode = "random"
+        clips = calculate_cut_points(duration, cut_mode, transcript, llm)
+    else:
+        clips = cuts
     total = len(clips)
 
     if parallel is None:

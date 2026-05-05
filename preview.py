@@ -37,7 +37,7 @@ class CaptionPreview(ctk.CTkToplevel):
         self.video_path = video_path
         self.transcript = transcript
         self.callback = callback
-        self.y_position = 0.76
+        self.y_position = 0.73
         self.preset_name = "Opus Clean"
         self.frame_img = None
 
@@ -89,8 +89,8 @@ class CaptionPreview(ctk.CTkToplevel):
         preset = captioner.PRESETS.get(self.preset_name, captioner.PRESETS["Opus Clean"])
 
         phrase_indices, active_idx = self._get_sample_text()
-        scaled_preset = dict(preset)
-        scaled_preset["fontsize"] = int(preset["fontsize"] * self.PREVIEW_W / 1080)
+        scale = self.PREVIEW_W / 1080
+        font_size = int(preset["fontsize"] * scale)
 
         plain_words = []
         for idx in phrase_indices:
@@ -98,19 +98,20 @@ class CaptionPreview(ctk.CTkToplevel):
             if preset["uppercase"]:
                 word = word.upper()
             plain_words.append(word)
-        font = captioner._load_font(scaled_preset["fontsize"])
-        wrapped_plain = captioner._wrap_phrase_words(plain_words, font, max_width_px=int(self.PREVIEW_W * 0.78)).replace(r"\N", "\n")
-        lines = wrapped_plain.splitlines() or ["Sample caption text"]
+        font = captioner._load_font(font_size)
 
-        stroke_w = max(1, preset["border"] * self.PREVIEW_W // 1080)
-        line_height = font.getbbox("Ag")[3] - font.getbbox("Ag")[1]
-        line_gap = max(6, int(line_height * 0.2))
-        total_h = len(lines) * line_height + max(0, len(lines) - 1) * line_gap
         anchor_y = int(self.y_position * self.PREVIEW_H)
-        start_y = anchor_y - total_h
+        center_x = self.PREVIEW_W // 2
 
-        band_top = max(0, start_y - 24)
-        band_bottom = min(self.PREVIEW_H, anchor_y + 18)
+        # Measure full phrase for natural spacing
+        full_phrase = " ".join(plain_words)
+        full_w = captioner._measure_text(full_phrase, font)
+        line_h = font.getbbox("Ag")[3] - font.getbbox("Ag")[1]
+        text_y = anchor_y - line_h
+
+        # Draw background band
+        band_top = max(0, text_y - 16)
+        band_bottom = min(self.PREVIEW_H, anchor_y + 10)
         band = Image.new("RGBA", img.size, (0, 0, 0, 0))
         band_draw = ImageDraw.Draw(band)
         band_draw.rounded_rectangle(
@@ -121,29 +122,35 @@ class CaptionPreview(ctk.CTkToplevel):
         img = Image.alpha_composite(img, band)
         draw = ImageDraw.Draw(img)
 
-        word_pointer = 0
-        y = start_y
-        for line in lines:
-            line_words = line.split()
-            full_line = " ".join(line_words)
-            bbox = font.getbbox(full_line or " ")
-            line_w = bbox[2] - bbox[0]
-            x = (self.PREVIEW_W - line_w) // 2
-            cursor_x = x
-            for line_word in line_words:
-                is_active = phrase_indices[word_pointer] == active_idx
-                fill = "#78FF57" if is_active else "white"
-                render_font = font
-                y_offset = 0
-                if is_active:
-                    active_size = max(12, int(scaled_preset["fontsize"] * (preset.get("active_scale", 100) / 100)))
-                    render_font = captioner._load_font(active_size)
-                    y_offset = max(0, (active_size - scaled_preset["fontsize"]) // 2)
-                draw.text((cursor_x, y - y_offset), line_word, font=render_font, fill=fill, stroke_width=stroke_w, stroke_fill="black")
-                space_bbox = render_font.getbbox(f"{line_word} ")
-                cursor_x += (space_bbox[2] - space_bbox[0])
-                word_pointer += 1
-            y += line_height + line_gap
+        stroke_w = max(1, preset["border"] * self.PREVIEW_W // 1080)
+        line_left = center_x - full_w // 2
+
+        for i, word in enumerate(plain_words):
+            is_active = phrase_indices[i] == active_idx
+            fill = "#78FF57" if is_active else "white"
+
+            if i == 0:
+                word_left = line_left
+            else:
+                prefix = " ".join(plain_words[:i]) + " "
+                word_left = line_left + captioner._measure_text(prefix, font)
+
+            word_w = captioner._measure_text(word, font)
+            render_font = font
+            y_offset = 0
+            if is_active and preset.get("active_scale", 100) != 100:
+                active_size = max(12, int(font_size * preset["active_scale"] / 100))
+                render_font = captioner._load_font(active_size)
+                y_offset = (active_size - font_size) // 2
+                # Center the scaled word on the same center-x
+                scaled_w = captioner._measure_text(word, render_font)
+                word_left = word_left + word_w // 2 - scaled_w // 2
+
+            draw.text(
+                (word_left, text_y - y_offset),
+                word, font=render_font, fill=fill,
+                stroke_width=stroke_w, stroke_fill="black",
+            )
 
         draw.line([(0, anchor_y), (self.PREVIEW_W, anchor_y)], fill="#00ff00", width=1)
 
