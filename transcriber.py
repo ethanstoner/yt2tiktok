@@ -160,7 +160,7 @@ def _fetch_youtube_captions(url: str, log_fn=None) -> list[dict]:
     events = data.get("events", [])
 
     import re
-    has_censored = False
+    _CENSORED_PLACEHOLDER = "__CENSORED__"
     words = []
     for ev in events:
         segs = ev.get("segs")
@@ -172,17 +172,23 @@ def _fetch_youtube_captions(url: str, log_fn=None) -> list[dict]:
             text = seg.get("utf8", "").strip()
             if not text or text == "\n":
                 continue
-            # Detect YouTube censorship (e.g. [__], [Music] is fine to skip)
-            if re.search(r"\[[\W_]+\]", text):
-                has_censored = True
-            # Clean up YouTube caption artifacts
-            text = re.sub(r"^>>+\s*", "", text).strip()  # remove >> speaker markers
-            text = re.sub(r"\[.*?\]", "", text).strip()   # remove [music] [applause] etc
-            if not text:
-                continue
             offset_ms = seg.get("tOffsetMs", 0)
             start_ms = base_ms + offset_ms
             start_s = round(start_ms / 1000, 3)
+            # Detect YouTube censorship (e.g. [__]) — mark for whisper fill-in
+            if re.search(r"\[[\W_]+\]", text):
+                words.append({
+                    "word": _CENSORED_PLACEHOLDER,
+                    "start": start_s,
+                    "end": start_s,
+                    "confidence": 0.0,
+                })
+                continue
+            # Clean up YouTube caption artifacts
+            text = re.sub(r"^>>+\s*", "", text).strip()
+            text = re.sub(r"\[.*?\]", "", text).strip()  # [music] [applause] etc
+            if not text:
+                continue
             words.append({
                 "word": text,
                 "start": start_s,
@@ -197,29 +203,71 @@ def _fetch_youtube_captions(url: str, log_fn=None) -> list[dict]:
     if words:
         words[-1]["end"] = round(words[-1]["start"] + 0.3, 3)
 
-    # Filter out empty words
+    # Filter out empty words (but keep censored placeholders)
     words = [w for w in words if w["word"]]
 
     if not words:
         raise TranscriptionError("YouTube captions had no usable words")
 
-    if has_censored:
-        if log_fn:
-            log_fn("YouTube captions contain censored words, falling back to local transcription...")
-        raise TranscriptionError("YouTube captions censored — using local transcription for accuracy")
+    censored_count = sum(1 for w in words if w["word"] == _CENSORED_PLACEHOLDER)
+    if log_fn:
+        log_fn(f"Got {len(words)} words from YouTube captions" +
+               (f" ({censored_count} censored)" if censored_count else ""))
+
+    return words, censored_count
+
+
+def _fill_censored_words(yt_words: list[dict], video_path: str, log_fn=None) -> list[dict]:
+    """Replace censored placeholders in YouTube captions with whisper transcriptions."""
+    censored = [w for w in yt_words if w["word"] == "__CENSORED__"]
+    if not censored:
+        return yt_words
 
     if log_fn:
-        log_fn(f"Got {len(words)} words from YouTube captions")
-    return words
+        log_fn(f"Filling {len(censored)} censored word(s) with local transcription...")
+
+    # Run whisper to get uncensored words
+    audio_path = _extract_audio(video_path, log_fn)
+    try:
+        whisper_words = _transcribe_faster_whisper(audio_path, log_fn)
+    finally:
+        try:
+            os.unlink(audio_path)
+        except OSError:
+            pass
+
+    # For each censored slot, find the closest whisper word by timestamp
+    for cw in censored:
+        best_match = None
+        best_dist = float("inf")
+        for ww in whisper_words:
+            dist = abs(ww["start"] - cw["start"])
+            if dist < best_dist:
+                best_dist = dist
+                best_match = ww
+        if best_match and best_dist < 2.0:
+            cw["word"] = best_match["word"]
+            cw["confidence"] = best_match["confidence"]
+            if log_fn:
+                log_fn(f"  Filled censored word at {cw['start']:.1f}s -> \"{best_match['word']}\"")
+        else:
+            # No match found, remove the placeholder
+            cw["word"] = ""
+
+    # Filter out any remaining empty entries
+    return [w for w in yt_words if w["word"] and w["word"] != "__CENSORED__"]
 
 
 def transcribe(video_path: str, url: str = None, log_fn=None) -> list[dict]:
     # Try YouTube captions first (most accurate, no local compute)
     if url:
         try:
-            words = _fetch_youtube_captions(url, log_fn)
+            words, censored_count = _fetch_youtube_captions(url, log_fn)
+            if censored_count > 0:
+                words = _fill_censored_words(words, video_path, log_fn)
             if log_fn:
-                log_fn(f"Transcription complete: {len(words)} words (YouTube captions)")
+                log_fn(f"Transcription complete: {len(words)} words (YouTube captions" +
+                       (" + whisper fill-in)" if censored_count else ")"))
             return words
         except Exception as e:
             if log_fn:
