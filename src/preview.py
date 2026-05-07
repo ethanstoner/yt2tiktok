@@ -33,7 +33,7 @@ class CaptionPreview(ctk.CTkToplevel):
     PREVIEW_W = 360
     PREVIEW_H = 640
 
-    def __init__(self, master, video_path: str, transcript: list[dict], callback, y_var=None, background_image=None):
+    def __init__(self, master, video_path: str, transcript: list[dict], callback, y_var=None, background_image=None, video_title: str = "Sample Video Title", clip_index: int = 1):
         super().__init__(master)
         self.title("Caption Preview")
         self.geometry(f"{self.PREVIEW_W + 40}x{self.PREVIEW_H + 160}")
@@ -46,6 +46,8 @@ class CaptionPreview(ctk.CTkToplevel):
         self.y_position = y_var.get() if y_var else 0.73
         self.preset_name = "Opus Clean"
         self.frame_img = None
+        self.video_title = video_title
+        self.clip_index = clip_index
 
         source_img = None
         if background_image:
@@ -120,9 +122,48 @@ class CaptionPreview(ctk.CTkToplevel):
         img = self.base_image.convert("RGBA")
         draw = ImageDraw.Draw(img)
         preset = captioner.PRESETS.get(self.preset_name, captioner.PRESETS["Opus Clean"])
-
-        phrase_indices, active_idx = self._get_sample_text()
         scale = self.PREVIEW_W / 1080
+        center_x = self.PREVIEW_W // 2
+
+        # ── Title and Part label (matching clipper.py layout) ──
+        # Calculate the blurred bar height (top/bottom padding)
+        # For 16:9 source on 9:16 frame: video is 360x202, bars are ~219px each
+        fg_h = int(self.PREVIEW_H * 9 / 16)  # approximate 16:9 video height
+        pad_y = (self.PREVIEW_H - fg_h) // 2
+
+        # Title at top
+        title_fontsize = max(10, int(40 * scale))
+        title_font = captioner._load_font(title_fontsize)
+        title_text = self.video_title
+        title_w = captioner._measure_text(title_text, title_font)
+        # Shrink if too wide
+        while title_w > self.PREVIEW_W - 30 and title_fontsize > 8:
+            title_fontsize -= 1
+            title_font = captioner._load_font(title_fontsize)
+            title_w = captioner._measure_text(title_text, title_font)
+        title_h = title_font.getbbox("Ag")[3] - title_font.getbbox("Ag")[1]
+        title_x = center_x - title_w // 2
+        title_y = (pad_y - title_h) // 2
+        draw.text(
+            (title_x, title_y), title_text, font=title_font, fill="white",
+            stroke_width=2, stroke_fill="black",
+        )
+
+        # Part label at bottom
+        part_text = f"Part {self.clip_index}"
+        part_fontsize = max(10, int(60 * scale))
+        part_font = captioner._load_font(part_fontsize)
+        part_w = captioner._measure_text(part_text, part_font)
+        part_h = part_font.getbbox("Ag")[3] - part_font.getbbox("Ag")[1]
+        part_x = center_x - part_w // 2
+        part_y = (self.PREVIEW_H - pad_y) + (pad_y - part_h) // 2
+        draw.text(
+            (part_x, part_y), part_text, font=part_font, fill="white",
+            stroke_width=2, stroke_fill="black",
+        )
+
+        # ── Caption text ──
+        phrase_indices, active_idx = self._get_sample_text()
         font_size = int(preset["fontsize"] * scale)
 
         plain_words = []
@@ -134,63 +175,63 @@ class CaptionPreview(ctk.CTkToplevel):
         font = captioner._load_font(font_size)
 
         anchor_y = int(self.y_position * self.PREVIEW_H)
-        center_x = self.PREVIEW_W // 2
+        space_w = captioner._measure_text(" ", font)
 
-        # Measure full phrase for natural spacing
-        full_phrase = " ".join(plain_words)
-        full_w = captioner._measure_text(full_phrase, font)
+        # Measure each word at its render size (accounting for active scale)
+        word_widths = []
+        word_fonts = []
+        word_y_offsets = []
+        for i, word in enumerate(plain_words):
+            is_active = phrase_indices[i] == active_idx
+            if is_active and preset.get("active_scale", 100) != 100:
+                active_size = max(12, int(font_size * preset["active_scale"] / 100))
+                rf = captioner._load_font(active_size)
+                word_widths.append(captioner._measure_text(word, rf))
+                word_fonts.append(rf)
+                word_y_offsets.append((active_size - font_size) // 2)
+            else:
+                word_widths.append(captioner._measure_text(word, font))
+                word_fonts.append(font)
+                word_y_offsets.append(0)
+
+        total_w = sum(word_widths) + space_w * (len(plain_words) - 1)
         line_h = font.getbbox("Ag")[3] - font.getbbox("Ag")[1]
         text_y = anchor_y - line_h
 
-        # Draw background band
-        band_top = max(0, text_y - 16)
-        band_bottom = min(self.PREVIEW_H, anchor_y + 10)
+        # Draw background band behind caption
+        band_top = max(0, text_y - 12)
+        band_bottom = min(self.PREVIEW_H, anchor_y + 8)
         band = Image.new("RGBA", img.size, (0, 0, 0, 0))
         band_draw = ImageDraw.Draw(band)
         band_draw.rounded_rectangle(
             [(18, band_top), (self.PREVIEW_W - 18, band_bottom)],
-            radius=18,
+            radius=14,
             fill=(0, 0, 0, 90),
         )
         img = Image.alpha_composite(img, band)
         draw = ImageDraw.Draw(img)
 
         stroke_w = max(1, preset["border"] * self.PREVIEW_W // 1080)
-        line_left = center_x - full_w // 2
 
         # Convert ASS BGR highlight color to RGB hex
         raw = preset["highlight_color"].replace("&H", "").replace("&h", "")
         if len(raw) == 8:
             raw = raw[2:]
-        b, g, r = raw[0:2], raw[2:4], raw[4:6]
-        highlight_hex = f"#{r}{g}{b}"
+        bv, gv, rv = raw[0:2], raw[2:4], raw[4:6]
+        highlight_hex = f"#{rv}{gv}{bv}"
 
+        # Draw words with correct spacing
+        cursor_x = center_x - total_w // 2
         for i, word in enumerate(plain_words):
             is_active = phrase_indices[i] == active_idx
             fill = highlight_hex if is_active else "white"
 
-            if i == 0:
-                word_left = line_left
-            else:
-                prefix = " ".join(plain_words[:i]) + " "
-                word_left = line_left + captioner._measure_text(prefix, font)
-
-            word_w = captioner._measure_text(word, font)
-            render_font = font
-            y_offset = 0
-            if is_active and preset.get("active_scale", 100) != 100:
-                active_size = max(12, int(font_size * preset["active_scale"] / 100))
-                render_font = captioner._load_font(active_size)
-                y_offset = (active_size - font_size) // 2
-                # Center the scaled word on the same center-x
-                scaled_w = captioner._measure_text(word, render_font)
-                word_left = word_left + word_w // 2 - scaled_w // 2
-
             draw.text(
-                (word_left, text_y - y_offset),
-                word, font=render_font, fill=fill,
+                (cursor_x, text_y - word_y_offsets[i]),
+                word, font=word_fonts[i], fill=fill,
                 stroke_width=stroke_w, stroke_fill="black",
             )
+            cursor_x += word_widths[i] + space_w
 
         self.frame_img = ImageTk.PhotoImage(img.convert("RGB"))
         self.canvas.delete("all")

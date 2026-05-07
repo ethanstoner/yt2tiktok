@@ -422,7 +422,8 @@ def build_gui():
         def on_apply(y_pos, preset):
             caption_y_var.set(y_pos)
             preset_var.set(preset)
-        CaptionPreview(app, vp or "", sample, on_apply, y_var=caption_y_var, background_image=bg if not vp else None)
+        vid_title = title_var.get() or "Sample Video Title"
+        CaptionPreview(app, vp or "", sample, on_apply, y_var=caption_y_var, background_image=bg if not vp else None, video_title=vid_title)
 
     preview_btn = ctk.CTkButton(clip_scroll, text="Preview Captions", command=on_preview, state="disabled")
     preview_btn.pack(pady=5)
