@@ -14,21 +14,26 @@ FFMPEG_CMD = shutil.which("ffmpeg")
 def _grab_frame(video_path: str, time_sec: float = 30) -> str | None:
     tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
     tmp.close()
-    cmd = [
-        FFMPEG_CMD, "-y", "-ss", str(time_sec),
-        "-i", video_path, "-vframes", "1", "-f", "image2", tmp.name,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0 or not os.path.exists(tmp.name):
-        return None
-    return tmp.name
+    for seek in [time_sec, 0]:
+        cmd = [
+            FFMPEG_CMD, "-y", "-ss", str(seek),
+            "-i", video_path, "-vframes", "1", "-f", "image2", tmp.name,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0 and os.path.exists(tmp.name) and os.path.getsize(tmp.name) > 0:
+            return tmp.name
+    try:
+        os.unlink(tmp.name)
+    except OSError:
+        pass
+    return None
 
 
 class CaptionPreview(ctk.CTkToplevel):
     PREVIEW_W = 360
     PREVIEW_H = 640
 
-    def __init__(self, master, video_path: str, transcript: list[dict], callback):
+    def __init__(self, master, video_path: str, transcript: list[dict], callback, y_var=None):
         super().__init__(master)
         self.title("Caption Preview")
         self.geometry(f"{self.PREVIEW_W + 40}x{self.PREVIEW_H + 160}")
@@ -37,7 +42,8 @@ class CaptionPreview(ctk.CTkToplevel):
         self.video_path = video_path
         self.transcript = transcript
         self.callback = callback
-        self.y_position = 0.73
+        self.y_var = y_var
+        self.y_position = y_var.get() if y_var else 0.73
         self.preset_name = "Opus Clean"
         self.frame_img = None
 
@@ -160,11 +166,15 @@ class CaptionPreview(ctk.CTkToplevel):
 
     def _on_click(self, event):
         self.y_position = max(0.64, min(0.84, event.y / self.PREVIEW_H))
+        if self.y_var:
+            self.y_var.set(self.y_position)
         self.pos_label.configure(text=f"Position: {int(self.y_position * 100)}%")
         self._render()
 
     def _on_drag(self, event):
         self.y_position = max(0.64, min(0.84, event.y / self.PREVIEW_H))
+        if self.y_var:
+            self.y_var.set(self.y_position)
         self.pos_label.configure(text=f"Position: {int(self.y_position * 100)}%")
         self._render()
 
