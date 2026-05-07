@@ -29,6 +29,19 @@ PROVIDERS = {
 }
 
 
+def detect_ollama_url() -> str | None:
+    """Try common Ollama ports and return the first responding base URL."""
+    for port in [11434, 11435, 11436]:
+        url = f"http://localhost:{port}"
+        try:
+            r = requests.get(f"{url}/api/tags", timeout=2)
+            if r.status_code == 200:
+                return f"{url}/v1"
+        except Exception:
+            pass
+    return None
+
+
 class LLMProvider:
     def __init__(self, provider: str, api_key: str = "", model: str = "", base_url: str = ""):
         self.provider = provider.lower()

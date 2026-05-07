@@ -11,7 +11,7 @@ from src import uploader
 from src import transcriber
 from src import captioner
 from src import config as cfg
-from src.llm_provider import LLMProvider, PROVIDERS
+from src.llm_provider import LLMProvider, PROVIDERS, detect_ollama_url
 from src.preview import CaptionPreview
 
 log_queue: queue.Queue[str] = queue.Queue()
@@ -643,9 +643,19 @@ def build_gui():
         model_var.set(default)
         model_dropdown.configure(values=[default] if default else ["(default)"])
         model_status.configure(text="")
-        # Auto-fetch for ollama (no API key needed)
+        # Auto-detect Ollama port and fetch models
         if provider == "ollama":
-            _fetch_models()
+            def _detect_and_fetch():
+                detected = detect_ollama_url()
+                def _apply():
+                    if detected:
+                        base_url_var.set(detected)
+                        model_status.configure(text=f"Found Ollama on {detected.replace('/v1','')}", text_color="green")
+                    else:
+                        model_status.configure(text="Ollama not detected", text_color="#ff4444")
+                    _fetch_models()
+                app.after(0, _apply)
+            threading.Thread(target=_detect_and_fetch, daemon=True).start()
     provider_var.trace_add("write", _on_provider_change)
 
     url_frame_s = ctk.CTkFrame(settings_scroll, fg_color="transparent")
