@@ -4,6 +4,7 @@ import threading
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from pathlib import Path
+from PIL import Image
 
 from src import clipper
 from src import uploader
@@ -163,80 +164,247 @@ def verify_worker(cookie_file, headless, status_var):
         status_var.set("Verification failed")
 
 
+def _ass_color_to_hex(ass_color: str) -> str:
+    """Convert ASS BGR color '&H00BBGGRR' to hex '#RRGGBB'."""
+    raw = ass_color.replace("&H", "").replace("&h", "")
+    if len(raw) == 8:
+        raw = raw[2:]  # strip alpha
+    b, g, r = raw[0:2], raw[2:4], raw[4:6]
+    return f"#{r}{g}{b}"
+
+
 def build_gui():
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
     app = ctk.CTk()
     app.title("yt2tiktok")
-    app.geometry("700x1000")
-    app.minsize(600, 800)
+    app.geometry("750x900")
+    app.minsize(650, 750)
 
-    main_frame = ctk.CTkScrollableFrame(app)
-    main_frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-    # ═══ CLIPPER SECTION ══════════════════════════════════════════════════
-    ctk.CTkLabel(main_frame, text="Video Clipping", font=("", 18, "bold")).pack(pady=(10, 5))
-
-    ctk.CTkLabel(main_frame, text="YouTube URL").pack(anchor="w", padx=10)
+    # ═══ SHARED STATE ════════════════════════════════════════════════════
     url_var = ctk.StringVar()
-    ctk.CTkEntry(main_frame, textvariable=url_var, width=600, placeholder_text="Paste YouTube URL here").pack(padx=10, pady=(0, 5))
-
     local_path_var = ctk.StringVar()
-    file_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+    yt_cookie_var = ctk.StringVar()
+    video_path_var = ctk.StringVar()
+    clip_dir_var = ctk.StringVar()
+    title_var = ctk.StringVar()
+    transcript_var = ctk.StringVar()
+    highlight_var = ctk.StringVar()
+    mode_var = ctk.StringVar(value="Blurred")
+    cut_mode_var = ctk.StringVar(value="Natural Pause")
+    captions_var = ctk.BooleanVar(value=True)
+    preset_var = ctk.StringVar(value="Opus Clean")
+    caption_y_var = ctk.DoubleVar(value=0.73)
+    transcription_status = ctk.StringVar(value="")
+
+    # Upload vars
+    tk_cookie_var = ctk.StringVar(value=uploader.load_last_cookie_path())
+    tk_status_var = ctk.StringVar()
+    headless_var = ctk.BooleanVar(value=True)
+    caption_template_var = ctk.StringVar(value="{title} - Part {part}")
+    start_var = ctk.StringVar(value="10:00")
+    interval_var = ctk.StringVar(value="2")
+
+    # LLM vars
+    llm_enabled_var = ctk.BooleanVar(value=cfg.get("llm_enabled", False))
+    provider_var = ctk.StringVar(value=cfg.get("llm_provider", "groq"))
+    api_key_var = ctk.StringVar(value=cfg.get("llm_api_key", ""))
+    model_var = ctk.StringVar(value=cfg.get("llm_model", ""))
+    base_url_var = ctk.StringVar(value=cfg.get("llm_base_url", ""))
+
+    # Thumbnail image holder
+    thumb_image = [None]
+
+    # ═══ TAB VIEW ════════════════════════════════════════════════════════
+    tabview = ctk.CTkTabview(app)
+    tabview.pack(fill="both", expand=True, padx=10, pady=(10, 0))
+    tabview.add("Clip")
+    tabview.add("Upload")
+    tabview.add("Settings")
+
+    def fetch_url_info():
+        """Fetch YouTube video metadata and show preview card."""
+        url = url_var.get().strip()
+        if not url:
+            return
+        fetch_btn.configure(state="disabled")
+        preview_status.configure(text="Fetching...", text_color="gray")
+
+        def _fetch():
+            import yt_dlp
+            import requests as req
+            from io import BytesIO
+            try:
+                ydl_opts = {"quiet": True, "no_warnings": True}
+                cookie = yt_cookie_var.get().strip()
+                if cookie:
+                    ydl_opts["cookiefile"] = cookie
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                title = info.get("title", "Unknown")
+                duration = info.get("duration", 0)
+                thumb_url = info.get("thumbnail", "")
+
+                if duration >= 3600:
+                    dur_str = f"{int(duration//3600)}:{int(duration%3600//60):02d}:{int(duration%60):02d}"
+                else:
+                    dur_str = f"{int(duration//60)}:{int(duration%60):02d}"
+                est_clips = max(1, round(duration / 65))
+
+                ctk_img = None
+                if thumb_url:
+                    try:
+                        resp = req.get(thumb_url, timeout=10)
+                        img = Image.open(BytesIO(resp.content)).resize((320, 180), Image.LANCZOS)
+                        ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(320, 180))
+                    except Exception:
+                        pass
+
+                def _update_ui():
+                    title_var.set(clipper.sanitize_title(title))
+                    thumb_image[0] = ctk_img
+                    if ctk_img:
+                        thumb_label.configure(image=ctk_img, text="")
+                    else:
+                        thumb_label.configure(image=None, text="No thumbnail")
+                    info_label.configure(
+                        text=f"{title}\n{dur_str}  •  ~{est_clips} clips",
+                        text_color="white",
+                    )
+                    preview_status.configure(text="")
+                    fetch_btn.configure(state="normal")
+                    preview_btn.configure(state="normal")
+                app.after(0, _update_ui)
+
+            except Exception as e:
+                def _show_error():
+                    info_label.configure(text=f"Error: {str(e)[:80]}", text_color="#ff4444")
+                    preview_status.configure(text="")
+                    fetch_btn.configure(state="normal")
+                    thumb_label.configure(image=None, text="")
+                app.after(0, _show_error)
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    # ═══ CLIP TAB ════════════════════════════════════════════════════════
+    clip_tab = tabview.tab("Clip")
+    clip_scroll = ctk.CTkScrollableFrame(clip_tab)
+    clip_scroll.pack(fill="both", expand=True)
+
+    # URL input row
+    url_frame = ctk.CTkFrame(clip_scroll, fg_color="transparent")
+    url_frame.pack(fill="x", padx=10, pady=(10, 5))
+    ctk.CTkLabel(url_frame, text="YouTube URL").pack(anchor="w")
+    url_row = ctk.CTkFrame(url_frame, fg_color="transparent")
+    url_row.pack(fill="x")
+    url_entry = ctk.CTkEntry(url_row, textvariable=url_var, placeholder_text="Paste YouTube URL here")
+    url_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+    fetch_btn = ctk.CTkButton(url_row, text="Fetch", width=70, command=fetch_url_info)
+    fetch_btn.pack(side="right")
+    url_entry.bind("<Return>", lambda e: fetch_url_info())
+
+    # Preview card
+    preview_card = ctk.CTkFrame(clip_scroll, fg_color="#1e1e1e", corner_radius=10)
+    preview_card.pack(fill="x", padx=10, pady=5)
+    preview_status = ctk.CTkLabel(preview_card, text="", text_color="gray")
+    preview_status.pack(padx=10, pady=(5, 0), anchor="w")
+    preview_inner = ctk.CTkFrame(preview_card, fg_color="transparent")
+    preview_inner.pack(fill="x", padx=10, pady=10)
+    thumb_label = ctk.CTkLabel(preview_inner, text="", width=320, height=180)
+    thumb_label.pack(side="left", padx=(0, 10))
+    info_label = ctk.CTkLabel(
+        preview_inner, text="Enter a URL and click Fetch", text_color="gray",
+        justify="left", wraplength=320, font=("", 13),
+    )
+    info_label.pack(side="left", fill="both", expand=True, anchor="nw")
+
+    # Local file alternative
+    file_frame = ctk.CTkFrame(clip_scroll, fg_color="transparent")
     file_frame.pack(fill="x", padx=10, pady=5)
     ctk.CTkLabel(file_frame, text="Or local MP4:").pack(side="left")
     ctk.CTkLabel(file_frame, textvariable=local_path_var, text_color="gray").pack(side="left", padx=5, expand=True, fill="x")
-    ctk.CTkButton(file_frame, text="Browse", width=80, command=lambda: local_path_var.set(filedialog.askopenfilename(filetypes=[("MP4 files", "*.mp4")]) or "")).pack(side="right")
+    ctk.CTkButton(file_frame, text="Browse", width=80, command=lambda: local_path_var.set(
+        filedialog.askopenfilename(filetypes=[("MP4 files", "*.mp4")]) or ""
+    )).pack(side="right")
 
-    yt_cookie_var = ctk.StringVar()
-    cookie_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+    # YouTube cookies
+    cookie_frame = ctk.CTkFrame(clip_scroll, fg_color="transparent")
     cookie_frame.pack(fill="x", padx=10, pady=5)
-    ctk.CTkLabel(cookie_frame, text="YouTube cookies (optional):").pack(side="left")
-    ctk.CTkButton(cookie_frame, text="?", width=28, height=28, command=lambda: messagebox.showinfo("YouTube Cookies", "For age-restricted or private videos, export your YouTube cookies:\n\n1. Install 'Get cookies.txt LOCALLY' browser extension\n2. Log into YouTube in a regular window\n3. Click the extension, set domain to youtube.com, export\n4. Select the exported file here")).pack(side="left", padx=(5, 0))
+    ctk.CTkLabel(cookie_frame, text="YouTube cookies:").pack(side="left")
+    ctk.CTkButton(cookie_frame, text="?", width=28, height=28, command=lambda: messagebox.showinfo(
+        "YouTube Cookies",
+        "For age-restricted or private videos, export your YouTube cookies:\n\n"
+        "1. Install 'Get cookies.txt LOCALLY' browser extension\n"
+        "2. Log into YouTube in a regular window\n"
+        "3. Click the extension, set domain to youtube.com, export\n"
+        "4. Select the exported file here",
+    )).pack(side="left", padx=(5, 0))
     ctk.CTkLabel(cookie_frame, textvariable=yt_cookie_var, text_color="gray").pack(side="left", padx=5, expand=True, fill="x")
-    ctk.CTkButton(cookie_frame, text="Browse", width=80, command=lambda: yt_cookie_var.set(filedialog.askopenfilename(filetypes=[("Cookie files", "*.txt")]) or "")).pack(side="right")
+    ctk.CTkButton(cookie_frame, text="Browse", width=80, command=lambda: yt_cookie_var.set(
+        filedialog.askopenfilename(filetypes=[("Cookie files", "*.txt")]) or ""
+    )).pack(side="right")
 
-    mode_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-    mode_frame.pack(fill="x", padx=10, pady=5)
-    ctk.CTkLabel(mode_frame, text="Background:").pack(side="left")
-    mode_var = ctk.StringVar(value="Blurred")
-    ctk.CTkSegmentedButton(mode_frame, values=["Blurred", "Black Bars"], variable=mode_var).pack(side="left", padx=10)
+    # Clip options
+    ctk.CTkFrame(clip_scroll, height=1, fg_color="gray30").pack(fill="x", padx=10, pady=10)
+    opts_frame = ctk.CTkFrame(clip_scroll, fg_color="transparent")
+    opts_frame.pack(fill="x", padx=10, pady=5)
+    left_opt = ctk.CTkFrame(opts_frame, fg_color="transparent")
+    left_opt.pack(side="left", expand=True, fill="x")
+    ctk.CTkLabel(left_opt, text="Background").pack(anchor="w")
+    ctk.CTkSegmentedButton(left_opt, values=["Blurred", "Black Bars"], variable=mode_var).pack(anchor="w", pady=(2, 0))
+    right_opt = ctk.CTkFrame(opts_frame, fg_color="transparent")
+    right_opt.pack(side="right", expand=True, fill="x")
+    ctk.CTkLabel(right_opt, text="Cut Mode").pack(anchor="w")
+    ctk.CTkSegmentedButton(right_opt, values=["Random", "Natural Pause", "Cliffhanger"], variable=cut_mode_var).pack(anchor="w", pady=(2, 0))
 
-    # Cut mode
-    cut_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-    cut_frame.pack(fill="x", padx=10, pady=5)
-    ctk.CTkLabel(cut_frame, text="Cut mode:").pack(side="left")
-    cut_mode_var = ctk.StringVar(value="Natural Pause")
-    ctk.CTkSegmentedButton(cut_frame, values=["Random", "Natural Pause", "Cliffhanger"], variable=cut_mode_var).pack(side="left", padx=10)
+    # Caption section
+    ctk.CTkFrame(clip_scroll, height=1, fg_color="gray30").pack(fill="x", padx=10, pady=10)
+    ctk.CTkLabel(clip_scroll, text="Captions", font=("", 16, "bold")).pack(anchor="w", padx=10)
+    ctk.CTkCheckBox(clip_scroll, text="Enable auto-captions", variable=captions_var).pack(anchor="w", padx=10, pady=(5, 5))
 
-    clip_progress = ctk.CTkProgressBar(main_frame)
-    clip_progress.pack(fill="x", padx=10, pady=5)
-    clip_progress.set(0)
-
-    clip_dir_var = ctk.StringVar()
-    title_var = ctk.StringVar()
-    video_path_var = ctk.StringVar()
-    transcript_var = ctk.StringVar()
-    highlight_var = ctk.StringVar()
-
-    # ═══ CAPTIONS SECTION ═════════════════════════════════════════════════
-    ctk.CTkFrame(main_frame, height=2, fg_color="gray30").pack(fill="x", padx=10, pady=15)
-    ctk.CTkLabel(main_frame, text="Captions", font=("", 18, "bold")).pack(pady=(5, 5))
-
-    captions_var = ctk.BooleanVar(value=True)
-    ctk.CTkCheckBox(main_frame, text="Enable auto-captions", variable=captions_var).pack(anchor="w", padx=10)
-
-    preset_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+    # Visual preset selector
+    ctk.CTkLabel(clip_scroll, text="Style", font=("", 13)).pack(anchor="w", padx=10)
+    preset_frame = ctk.CTkFrame(clip_scroll, fg_color="transparent")
     preset_frame.pack(fill="x", padx=10, pady=5)
-    ctk.CTkLabel(preset_frame, text="Style:").pack(side="left")
-    preset_var = ctk.StringVar(value="Opus Clean")
-    ctk.CTkOptionMenu(preset_frame, values=list(captioner.PRESETS.keys()), variable=preset_var).pack(side="left", padx=5)
+    preset_buttons = {}
+    for name, p in captioner.PRESETS.items():
+        color = _ass_color_to_hex(p["highlight_color"])
+        def make_cmd(n=name):
+            def cmd():
+                preset_var.set(n)
+                for bn, btn in preset_buttons.items():
+                    if bn == n:
+                        btn.configure(border_width=2, border_color=_ass_color_to_hex(captioner.PRESETS[bn]["highlight_color"]))
+                    else:
+                        btn.configure(border_width=0, border_color="#2a2a2a")
+            return cmd
+        btn = ctk.CTkButton(
+            preset_frame, text=name, width=100, height=32,
+            fg_color="#2a2a2a", hover_color="#3a3a3a",
+            text_color=color, font=("", 12, "bold"),
+            border_width=2 if name == "Opus Clean" else 0,
+            border_color=color if name == "Opus Clean" else "#2a2a2a",
+            command=make_cmd(),
+        )
+        btn.pack(side="left", padx=3, pady=2)
+        preset_buttons[name] = btn
 
-    caption_y_var = [0.73]
+    # Caption position slider
+    pos_frame = ctk.CTkFrame(clip_scroll, fg_color="transparent")
+    pos_frame.pack(fill="x", padx=10, pady=5)
+    ctk.CTkLabel(pos_frame, text="Position").pack(side="left")
+    pos_label = ctk.CTkLabel(pos_frame, text=f"{int(caption_y_var.get() * 100)}%", width=40)
+    pos_label.pack(side="right")
+    pos_slider = ctk.CTkSlider(
+        pos_frame, from_=0.64, to=0.84, variable=caption_y_var,
+        command=lambda v: pos_label.configure(text=f"{int(float(v) * 100)}%"),
+    )
+    pos_slider.pack(side="left", fill="x", expand=True, padx=10)
 
-    transcription_status = ctk.StringVar(value="Waiting...")
-    ctk.CTkLabel(main_frame, textvariable=transcription_status, text_color="gray").pack(anchor="w", padx=10)
+    # Transcription status
+    ctk.CTkLabel(clip_scroll, textvariable=transcription_status, text_color="gray").pack(anchor="w", padx=10)
 
+    # Preview button
     def on_preview():
         vp = video_path_var.get()
         if not vp:
@@ -247,14 +415,14 @@ def build_gui():
             {"word": "text", "start": 1.0, "end": 1.5, "confidence": 1.0},
         ]
         def on_apply(y_pos, preset):
-            caption_y_var[0] = y_pos
+            caption_y_var.set(y_pos)
             preset_var.set(preset)
-        CaptionPreview(app, vp, sample, on_apply)
+        CaptionPreview(app, vp, sample, on_apply, y_var=caption_y_var)
 
-    preview_btn = ctk.CTkButton(main_frame, text="Preview Captions", command=on_preview, state="disabled")
+    preview_btn = ctk.CTkButton(clip_scroll, text="Preview Captions", command=on_preview, state="disabled")
     preview_btn.pack(pady=5)
 
-    # Clip button
+    # _get_llm helper
     def _get_llm():
         if not llm_enabled_var.get():
             return None
@@ -265,6 +433,7 @@ def build_gui():
             base_url=base_url_var.get(),
         )
 
+    # Start Clipping button
     def on_clip():
         clip_btn.configure(state="disabled")
         preview_btn.configure(state="disabled")
@@ -274,7 +443,7 @@ def build_gui():
             args=(
                 url_var.get().strip(), local_path_var.get().strip(),
                 yt_cookie_var.get().strip(), mode_var.get(), cut,
-                captions_var.get(), preset_var.get(), caption_y_var[0],
+                captions_var.get(), preset_var.get(), caption_y_var.get(),
                 _get_llm(),
                 clip_dir_var, title_var, transcript_var, highlight_var,
                 video_path_var, clip_btn, transcription_status, preview_btn,
@@ -282,46 +451,50 @@ def build_gui():
             daemon=True,
         ).start()
 
-    clip_btn = ctk.CTkButton(main_frame, text="Start Clipping", command=on_clip)
-    clip_btn.pack(pady=10)
+    clip_btn = ctk.CTkButton(clip_scroll, text="Start Clipping", height=40, font=("", 15, "bold"), command=on_clip)
+    clip_btn.pack(fill="x", padx=10, pady=(10, 10))
 
-    # ═══ UPLOADER SECTION ═════════════════════════════════════════════════
-    ctk.CTkFrame(main_frame, height=2, fg_color="gray30").pack(fill="x", padx=10, pady=15)
-    ctk.CTkLabel(main_frame, text="TikTok Upload", font=("", 18, "bold")).pack(pady=(5, 5))
+    # ═══ UPLOAD TAB ══════════════════════════════════════════════════════
+    upload_tab = tabview.tab("Upload")
+    upload_scroll = ctk.CTkScrollableFrame(upload_tab)
+    upload_scroll.pack(fill="both", expand=True)
 
-    folder_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+    ctk.CTkLabel(upload_scroll, text="TikTok Upload", font=("", 18, "bold")).pack(pady=(10, 10))
+
+    # Clip folder
+    folder_frame = ctk.CTkFrame(upload_scroll, fg_color="transparent")
     folder_frame.pack(fill="x", padx=10, pady=5)
     ctk.CTkLabel(folder_frame, text="Clip folder:").pack(side="left")
     ctk.CTkLabel(folder_frame, textvariable=clip_dir_var, text_color="gray").pack(side="left", padx=5, expand=True, fill="x")
-    ctk.CTkButton(folder_frame, text="Browse", width=80, command=lambda: clip_dir_var.set(filedialog.askdirectory() or clip_dir_var.get())).pack(side="right")
+    ctk.CTkButton(folder_frame, text="Browse", width=80, command=lambda: clip_dir_var.set(
+        filedialog.askdirectory() or clip_dir_var.get()
+    )).pack(side="right")
 
-    tk_cookie_var = ctk.StringVar(value=uploader.load_last_cookie_path())
-    tk_status_var = ctk.StringVar()
-    headless_var = ctk.BooleanVar(value=True)
-
-    tk_cookie_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+    # TikTok cookies
+    tk_cookie_frame = ctk.CTkFrame(upload_scroll, fg_color="transparent")
     tk_cookie_frame.pack(fill="x", padx=10, pady=5)
     ctk.CTkLabel(tk_cookie_frame, text="TikTok cookies:").pack(side="left")
     ctk.CTkLabel(tk_cookie_frame, textvariable=tk_cookie_var, text_color="gray").pack(side="left", padx=5, expand=True, fill="x")
-    ctk.CTkButton(tk_cookie_frame, text="Browse", width=80, command=lambda: tk_cookie_var.set(filedialog.askopenfilename(filetypes=[("Cookie files", "*.txt")]) or "")).pack(side="right")
-    ctk.CTkButton(tk_cookie_frame, text="Verify", width=60, command=lambda: threading.Thread(target=verify_worker, args=(tk_cookie_var.get(), headless_var.get(), tk_status_var), daemon=True).start()).pack(side="right", padx=5)
+    ctk.CTkButton(tk_cookie_frame, text="Browse", width=80, command=lambda: tk_cookie_var.set(
+        filedialog.askopenfilename(filetypes=[("Cookie files", "*.txt")]) or ""
+    )).pack(side="right")
+    ctk.CTkButton(tk_cookie_frame, text="Verify", width=60, command=lambda: threading.Thread(
+        target=verify_worker, args=(tk_cookie_var.get(), headless_var.get(), tk_status_var), daemon=True,
+    ).start()).pack(side="right", padx=5)
 
-    ctk.CTkLabel(main_frame, textvariable=tk_status_var, text_color="green").pack(padx=10, anchor="w")
+    # Dynamic status color
+    tk_status_label = ctk.CTkLabel(upload_scroll, textvariable=tk_status_var, text_color="gray")
+    tk_status_label.pack(padx=10, anchor="w")
 
-    troubleshoot_visible = ctk.BooleanVar(value=False)
-    troubleshoot_frame = ctk.CTkFrame(main_frame, fg_color="#2a2a2a", corner_radius=8)
-    troubleshoot_text = "If verification fails or uploads get CAPTCHA blocked:\n1. Uncheck 'Headless mode' and try again\n2. Solve any CAPTCHA or login prompt in that window\n3. Close the window, re-export cookies, and try again\n4. Cookies expire regularly — re-export when sessions fail"
-
-    def toggle_troubleshoot():
-        if troubleshoot_visible.get():
-            troubleshoot_frame.pack_forget()
-            troubleshoot_visible.set(False)
+    def _update_status_color(*_):
+        text = tk_status_var.get().lower()
+        if "logged in" in text:
+            tk_status_label.configure(text_color="green")
+        elif "failed" in text or "error" in text:
+            tk_status_label.configure(text_color="#ff4444")
         else:
-            troubleshoot_frame.pack(fill="x", padx=10, pady=5)
-            troubleshoot_visible.set(True)
-
-    ctk.CTkButton(main_frame, text="Troubleshooting Tips", width=160, height=28, fg_color="transparent", border_width=1, command=toggle_troubleshoot).pack(anchor="w", padx=10, pady=(0, 5))
-    ctk.CTkLabel(troubleshoot_frame, text=troubleshoot_text, justify="left", wraplength=580).pack(padx=10, pady=10)
+            tk_status_label.configure(text_color="gray")
+    tk_status_var.trace_add("write", _update_status_color)
 
     def on_cookie_selected(*_):
         path = tk_cookie_var.get()
@@ -329,21 +502,51 @@ def build_gui():
             uploader.save_last_cookie_path(path)
     tk_cookie_var.trace_add("write", on_cookie_selected)
 
-    ctk.CTkLabel(main_frame, text="Caption ({title}, {part}, {total})").pack(anchor="w", padx=10, pady=(5, 0))
-    caption_var = ctk.StringVar(value="{title} - Part {part}")
-    ctk.CTkEntry(main_frame, textvariable=caption_var, width=600).pack(padx=10)
+    # Caption template
+    ctk.CTkFrame(upload_scroll, height=1, fg_color="gray30").pack(fill="x", padx=10, pady=10)
+    ctk.CTkLabel(upload_scroll, text="Caption template").pack(anchor="w", padx=10)
+    ctk.CTkEntry(upload_scroll, textvariable=caption_template_var, placeholder_text="{title} - Part {part}").pack(fill="x", padx=10, pady=(0, 5))
+    ctk.CTkLabel(upload_scroll, text="Placeholders: {title}, {part}, {total}", text_color="gray", font=("", 11)).pack(anchor="w", padx=10)
 
-    schedule_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+    # Schedule settings
+    ctk.CTkFrame(upload_scroll, height=1, fg_color="gray30").pack(fill="x", padx=10, pady=10)
+    schedule_frame = ctk.CTkFrame(upload_scroll, fg_color="transparent")
     schedule_frame.pack(fill="x", padx=10, pady=5)
     ctk.CTkLabel(schedule_frame, text="Start time:").pack(side="left")
-    start_var = ctk.StringVar(value="10:00")
     ctk.CTkEntry(schedule_frame, textvariable=start_var, width=80, placeholder_text="HH:MM").pack(side="left", padx=5)
     ctk.CTkLabel(schedule_frame, text="Interval (hrs):").pack(side="left", padx=(15, 0))
-    interval_var = ctk.StringVar(value="2")
     ctk.CTkEntry(schedule_frame, textvariable=interval_var, width=60).pack(side="left", padx=5)
 
-    ctk.CTkCheckBox(main_frame, text="Headless mode (uncheck to debug)", variable=headless_var).pack(anchor="w", padx=10, pady=5)
+    # Headless
+    ctk.CTkCheckBox(upload_scroll, text="Headless mode (uncheck to debug)", variable=headless_var).pack(anchor="w", padx=10, pady=5)
 
+    # Troubleshooting tips (properly collapsible)
+    troubleshoot_frame_ref = [None]
+    def toggle_troubleshoot():
+        if troubleshoot_frame_ref[0] is not None:
+            troubleshoot_frame_ref[0].destroy()
+            troubleshoot_frame_ref[0] = None
+            troubleshoot_btn.configure(text="Show Troubleshooting Tips")
+        else:
+            f = ctk.CTkFrame(upload_scroll, fg_color="#2a2a2a", corner_radius=8)
+            f.pack(fill="x", padx=10, pady=5, before=upload_btn)
+            ctk.CTkLabel(f, text=(
+                "If verification fails or uploads get CAPTCHA blocked:\n"
+                "1. Uncheck 'Headless mode' and try again\n"
+                "2. Solve any CAPTCHA or login prompt in that window\n"
+                "3. Close the window, re-export cookies, and try again\n"
+                "4. Cookies expire regularly - re-export when sessions fail"
+            ), justify="left", wraplength=580).pack(padx=10, pady=10)
+            troubleshoot_frame_ref[0] = f
+            troubleshoot_btn.configure(text="Hide Troubleshooting Tips")
+
+    troubleshoot_btn = ctk.CTkButton(
+        upload_scroll, text="Show Troubleshooting Tips", width=200, height=28,
+        fg_color="transparent", border_width=1, command=toggle_troubleshoot,
+    )
+    troubleshoot_btn.pack(anchor="w", padx=10, pady=(5, 5))
+
+    # Upload button
     def on_upload():
         if not tk_cookie_var.get():
             messagebox.showerror("Error", "Select a TikTok cookie file first.")
@@ -355,56 +558,44 @@ def build_gui():
         clip_count = len([f for f in os.listdir(clip_dir_var.get()) if f.endswith(".mp4") and "_clip_" in f])
         threading.Thread(
             target=uploader_worker,
-            args=(clip_dir_var.get(), title_var.get(), clip_count, tk_cookie_var.get(), caption_var.get(), start_var.get(), interval_var.get(), headless_var.get(), upload_btn),
+            args=(clip_dir_var.get(), title_var.get(), clip_count, tk_cookie_var.get(),
+                  caption_template_var.get(), start_var.get(), interval_var.get(),
+                  headless_var.get(), upload_btn),
             daemon=True,
         ).start()
 
-    upload_btn = ctk.CTkButton(main_frame, text="Upload to TikTok", command=on_upload)
-    upload_btn.pack(pady=10)
+    upload_btn = ctk.CTkButton(upload_scroll, text="Upload to TikTok", height=40, font=("", 15, "bold"), command=on_upload)
+    upload_btn.pack(fill="x", padx=10, pady=(10, 10))
 
-    # ═══ LLM SETTINGS ════════════════════════════════════════════════════
-    ctk.CTkFrame(main_frame, height=2, fg_color="gray30").pack(fill="x", padx=10, pady=15)
+    # ═══ SETTINGS TAB ════════════════════════════════════════════════════
+    settings_tab = tabview.tab("Settings")
+    settings_scroll = ctk.CTkScrollableFrame(settings_tab)
+    settings_scroll.pack(fill="both", expand=True)
 
-    llm_enabled_var = ctk.BooleanVar(value=cfg.get("llm_enabled", False))
-    llm_frame = ctk.CTkFrame(main_frame, fg_color="#2a2a2a", corner_radius=8)
-    llm_visible = ctk.BooleanVar(value=False)
+    ctk.CTkLabel(settings_scroll, text="LLM Configuration", font=("", 18, "bold")).pack(pady=(10, 10))
+    ctk.CTkCheckBox(settings_scroll, text="Enable LLM (keyword detection + Cliffhanger mode)", variable=llm_enabled_var).pack(anchor="w", padx=10, pady=5)
 
-    def toggle_llm():
-        if llm_visible.get():
-            llm_frame.pack_forget()
-            llm_visible.set(False)
-        else:
-            llm_frame.pack(fill="x", padx=10, pady=5)
-            llm_visible.set(True)
-
-    ctk.CTkButton(main_frame, text="LLM Settings", width=140, height=28, fg_color="transparent", border_width=1, command=toggle_llm).pack(anchor="w", padx=10, pady=(0, 5))
-
-    ctk.CTkCheckBox(llm_frame, text="Enable LLM", variable=llm_enabled_var).pack(anchor="w", padx=10, pady=5)
-
-    provider_var = ctk.StringVar(value=cfg.get("llm_provider", "groq"))
-    prov_frame = ctk.CTkFrame(llm_frame, fg_color="transparent")
-    prov_frame.pack(fill="x", padx=10, pady=2)
+    prov_frame = ctk.CTkFrame(settings_scroll, fg_color="transparent")
+    prov_frame.pack(fill="x", padx=10, pady=5)
     ctk.CTkLabel(prov_frame, text="Provider:").pack(side="left")
     ctk.CTkOptionMenu(prov_frame, values=["groq", "openai", "gemini", "claude", "ollama", "custom"], variable=provider_var).pack(side="left", padx=5)
 
-    api_key_var = ctk.StringVar(value=cfg.get("llm_api_key", ""))
-    key_frame = ctk.CTkFrame(llm_frame, fg_color="transparent")
-    key_frame.pack(fill="x", padx=10, pady=2)
+    key_frame = ctk.CTkFrame(settings_scroll, fg_color="transparent")
+    key_frame.pack(fill="x", padx=10, pady=5)
     ctk.CTkLabel(key_frame, text="API Key:").pack(side="left")
-    ctk.CTkEntry(key_frame, textvariable=api_key_var, width=400, show="*").pack(side="left", padx=5, fill="x", expand=True)
+    ctk.CTkEntry(key_frame, textvariable=api_key_var, show="*").pack(side="left", padx=5, fill="x", expand=True)
 
-    model_var = ctk.StringVar(value=cfg.get("llm_model", ""))
-    mod_frame = ctk.CTkFrame(llm_frame, fg_color="transparent")
-    mod_frame.pack(fill="x", padx=10, pady=2)
+    mod_frame = ctk.CTkFrame(settings_scroll, fg_color="transparent")
+    mod_frame.pack(fill="x", padx=10, pady=5)
     ctk.CTkLabel(mod_frame, text="Model:").pack(side="left")
-    ctk.CTkEntry(mod_frame, textvariable=model_var, width=300).pack(side="left", padx=5)
+    ctk.CTkEntry(mod_frame, textvariable=model_var, placeholder_text="Leave blank for default").pack(side="left", padx=5, fill="x", expand=True)
 
-    base_url_var = ctk.StringVar(value=cfg.get("llm_base_url", ""))
-    url_frame = ctk.CTkFrame(llm_frame, fg_color="transparent")
-    url_frame.pack(fill="x", padx=10, pady=2)
-    ctk.CTkLabel(url_frame, text="Base URL:").pack(side="left")
-    ctk.CTkEntry(url_frame, textvariable=base_url_var, width=400).pack(side="left", padx=5, fill="x", expand=True)
+    url_frame_s = ctk.CTkFrame(settings_scroll, fg_color="transparent")
+    url_frame_s.pack(fill="x", padx=10, pady=5)
+    ctk.CTkLabel(url_frame_s, text="Base URL:").pack(side="left")
+    ctk.CTkEntry(url_frame_s, textvariable=base_url_var, placeholder_text="Only for custom endpoints").pack(side="left", padx=5, fill="x", expand=True)
 
+    # Auto-save LLM settings
     def save_llm(*_):
         cfg.save_config({
             "llm_enabled": llm_enabled_var.get(),
@@ -413,27 +604,54 @@ def build_gui():
             "llm_model": model_var.get(),
             "llm_base_url": base_url_var.get(),
         })
-
     for v in [llm_enabled_var, provider_var, api_key_var, model_var, base_url_var]:
         v.trace_add("write", save_llm)
 
-    # ═══ LOG BOX ══════════════════════════════════════════════════════════
-    ctk.CTkFrame(main_frame, height=2, fg_color="gray30").pack(fill="x", padx=10, pady=10)
-    ctk.CTkLabel(main_frame, text="Log", font=("", 14, "bold")).pack(anchor="w", padx=10)
-    progress_label = ctk.CTkLabel(main_frame, text="", text_color="green")
-    progress_label.pack(anchor="w", padx=10)
-    log_box = ctk.CTkTextbox(main_frame, height=200, font=("Consolas", 12), fg_color="#1a1a1a", text_color="#00ff00")
-    log_box.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+    # ═══ LOG PANEL ═══════════════════════════════════════════════════════
+    log_panel = ctk.CTkFrame(app, fg_color="transparent")
+    log_panel.pack(fill="x", padx=10, pady=(5, 10))
 
+    clip_progress = ctk.CTkProgressBar(log_panel)
+    clip_progress.pack(fill="x", pady=(0, 5))
+    clip_progress.set(0)
+
+    log_header = ctk.CTkFrame(log_panel, fg_color="transparent")
+    log_header.pack(fill="x")
+    ctk.CTkLabel(log_header, text="Log", font=("", 13, "bold")).pack(side="left")
+    progress_label = ctk.CTkLabel(log_header, text="", text_color="green", font=("", 12))
+    progress_label.pack(side="left", padx=10)
+
+    log_box = ctk.CTkTextbox(log_panel, height=180, font=("Consolas", 12), fg_color="#1a1a1a", text_color="#00ff00")
+    log_visible = [False]
+
+    def toggle_log():
+        if log_visible[0]:
+            log_box.pack_forget()
+            log_visible[0] = False
+            log_toggle_btn.configure(text="Show Log")
+        else:
+            log_box.pack(fill="x", pady=(5, 0))
+            log_visible[0] = True
+            log_toggle_btn.configure(text="Hide Log")
+
+    log_toggle_btn = ctk.CTkButton(
+        log_header, text="Show Log", width=80, height=24,
+        fg_color="transparent", border_width=1, font=("", 11),
+        command=toggle_log,
+    )
+    log_toggle_btn.pack(side="right")
+
+    # Queue polling
     def poll_queues():
         while not log_queue.empty():
             msg = log_queue.get()
             log_box.insert("end", msg + "\n")
             log_box.see("end")
+            if not log_visible[0]:
+                toggle_log()
         while not progress_queue.empty():
             progress_label.configure(text=progress_queue.get())
         app.after(100, poll_queues)
-
     app.after(100, poll_queues)
 
     if not clipper.FFMPEG_CMD:
