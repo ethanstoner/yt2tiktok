@@ -47,19 +47,22 @@ class CaptionPreview(ctk.CTkToplevel):
         self.preset_name = "Opus Clean"
         self.frame_img = None
 
+        source_img = None
         if background_image:
-            self.base_image = background_image.resize(
-                (self.PREVIEW_W, self.PREVIEW_H), Image.LANCZOS
-            )
+            source_img = background_image
         else:
             frame_path = _grab_frame(video_path) if video_path else None
             if frame_path:
-                self.base_image = Image.open(frame_path).resize(
-                    (self.PREVIEW_W, self.PREVIEW_H), Image.LANCZOS
-                )
+                source_img = Image.open(frame_path)
                 os.unlink(frame_path)
-            else:
-                self.base_image = Image.new("RGB", (self.PREVIEW_W, self.PREVIEW_H), "#1a1a1a")
+
+        if source_img:
+            self.base_image = self._make_9x16_background(source_img)
+        else:
+            self.base_image = Image.new("RGB", (self.PREVIEW_W, self.PREVIEW_H), "#1a1a1a")
+
+        self.lift()
+        self.focus_force()
 
         preset_frame = ctk.CTkFrame(self, fg_color="transparent")
         preset_frame.pack(fill="x", padx=10, pady=5)
@@ -86,6 +89,25 @@ class CaptionPreview(ctk.CTkToplevel):
         ctk.CTkButton(btn_frame, text="Cancel", command=self.destroy).pack(side="right", expand=True, padx=5)
 
         self._render()
+
+    def _make_9x16_background(self, source: Image.Image) -> Image.Image:
+        """Create a 9:16 preview with blurred background, matching actual clip output."""
+        from PIL import ImageFilter
+        w, h = self.PREVIEW_W, self.PREVIEW_H  # 360x640 = 9:16
+
+        # Blurred, zoomed background
+        bg = source.resize((w, h), Image.LANCZOS).filter(ImageFilter.GaussianBlur(radius=15))
+
+        # Scaled foreground (fit width, maintain aspect ratio)
+        src_w, src_h = source.size
+        fg_w = w
+        fg_h = int(src_h * (w / src_w))
+        fg = source.resize((fg_w, fg_h), Image.LANCZOS)
+
+        # Overlay centered
+        y_offset = (h - fg_h) // 2
+        bg.paste(fg, (0, y_offset))
+        return bg
 
     def _get_sample_text(self) -> str:
         phrases = captioner.group_into_phrases(self.transcript)
@@ -162,8 +184,6 @@ class CaptionPreview(ctk.CTkToplevel):
                 word, font=render_font, fill=fill,
                 stroke_width=stroke_w, stroke_fill="black",
             )
-
-        draw.line([(0, anchor_y), (self.PREVIEW_W, anchor_y)], fill="#00ff00", width=1)
 
         self.frame_img = ImageTk.PhotoImage(img.convert("RGB"))
         self.canvas.delete("all")
