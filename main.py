@@ -212,8 +212,9 @@ def build_gui():
     model_var = ctk.StringVar(value=cfg.get("llm_model", ""))
     base_url_var = ctk.StringVar(value=cfg.get("llm_base_url", ""))
 
-    # Thumbnail image holder
+    # Thumbnail image holders (CTkImage for display, PIL Image for preview)
     thumb_image = [None]
+    thumb_pil = [None]
 
     # ═══ TAB VIEW ════════════════════════════════════════════════════════
     tabview = ctk.CTkTabview(app)
@@ -252,17 +253,20 @@ def build_gui():
                 est_clips = max(1, round(duration / 65))
 
                 ctk_img = None
+                pil_img = None
                 if thumb_url:
                     try:
                         resp = req.get(thumb_url, timeout=10)
-                        img = Image.open(BytesIO(resp.content)).resize((320, 180), Image.LANCZOS)
-                        ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(320, 180))
+                        pil_img = Image.open(BytesIO(resp.content))
+                        img_resized = pil_img.resize((320, 180), Image.LANCZOS)
+                        ctk_img = ctk.CTkImage(light_image=img_resized, dark_image=img_resized, size=(320, 180))
                     except Exception:
                         pass
 
                 def _update_ui():
                     title_var.set(clipper.sanitize_title(title))
                     thumb_image[0] = ctk_img
+                    thumb_pil[0] = pil_img
                     if ctk_img:
                         thumb_label.configure(image=ctk_img, text="")
                     else:
@@ -407,7 +411,8 @@ def build_gui():
     # Preview button
     def on_preview():
         vp = video_path_var.get()
-        if not vp:
+        bg = thumb_pil[0]
+        if not vp and not bg:
             return
         sample = [
             {"word": "Sample", "start": 0, "end": 0.5, "confidence": 1.0},
@@ -417,7 +422,7 @@ def build_gui():
         def on_apply(y_pos, preset):
             caption_y_var.set(y_pos)
             preset_var.set(preset)
-        CaptionPreview(app, vp, sample, on_apply, y_var=caption_y_var)
+        CaptionPreview(app, vp or "", sample, on_apply, y_var=caption_y_var, background_image=bg if not vp else None)
 
     preview_btn = ctk.CTkButton(clip_scroll, text="Preview Captions", command=on_preview, state="disabled")
     preview_btn.pack(pady=5)
@@ -585,10 +590,63 @@ def build_gui():
     ctk.CTkLabel(key_frame, text="API Key:").pack(side="left")
     ctk.CTkEntry(key_frame, textvariable=api_key_var, show="*").pack(side="left", padx=5, fill="x", expand=True)
 
+    # Model selector with dropdown + fetch
     mod_frame = ctk.CTkFrame(settings_scroll, fg_color="transparent")
     mod_frame.pack(fill="x", padx=10, pady=5)
     ctk.CTkLabel(mod_frame, text="Model:").pack(side="left")
-    ctk.CTkEntry(mod_frame, textvariable=model_var, placeholder_text="Leave blank for default").pack(side="left", padx=5, fill="x", expand=True)
+    model_status = ctk.CTkLabel(mod_frame, text="", text_color="gray", font=("", 11))
+    model_status.pack(side="right")
+
+    # Default model list from provider
+    default_model = PROVIDERS.get(provider_var.get(), {}).get("default_model", "")
+    initial_models = [default_model] if default_model else ["(default)"]
+
+    model_dropdown = ctk.CTkOptionMenu(mod_frame, values=initial_models, variable=model_var, width=250)
+    model_dropdown.pack(side="left", padx=5)
+
+    fetch_models_btn = ctk.CTkButton(mod_frame, text="Fetch Models", width=100, height=28, command=lambda: None)
+    fetch_models_btn.pack(side="left", padx=5)
+
+    def _fetch_models():
+        fetch_models_btn.configure(state="disabled")
+        model_status.configure(text="Fetching...", text_color="gray")
+        provider = provider_var.get()
+        api_key = api_key_var.get()
+        base_url = base_url_var.get()
+
+        def _do_fetch():
+            llm = LLMProvider(provider=provider, api_key=api_key, base_url=base_url)
+            models = llm.list_models()
+
+            def _update():
+                fetch_models_btn.configure(state="normal")
+                if models:
+                    model_dropdown.configure(values=models)
+                    # If current model not in list, select first
+                    if model_var.get() not in models:
+                        model_var.set(models[0])
+                    model_status.configure(text=f"{len(models)} models", text_color="green")
+                else:
+                    model_status.configure(text="No models found", text_color="#ff4444")
+            app.after(0, _update)
+
+        threading.Thread(target=_do_fetch, daemon=True).start()
+
+    fetch_models_btn.configure(command=_fetch_models)
+
+    # Auto-fetch models when provider changes
+    def _on_provider_change(*_):
+        provider = provider_var.get()
+        info = PROVIDERS.get(provider, {})
+        default = info.get("default_model", "")
+        # Reset model to default for new provider
+        model_var.set(default)
+        model_dropdown.configure(values=[default] if default else ["(default)"])
+        model_status.configure(text="")
+        # Auto-fetch for ollama (no API key needed)
+        if provider == "ollama":
+            _fetch_models()
+    provider_var.trace_add("write", _on_provider_change)
 
     url_frame_s = ctk.CTkFrame(settings_scroll, fg_color="transparent")
     url_frame_s.pack(fill="x", padx=10, pady=5)

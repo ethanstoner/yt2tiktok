@@ -49,6 +49,41 @@ class LLMProvider:
                 return False
         return bool(self.api_key)
 
+    def list_models(self) -> list[str]:
+        try:
+            if self.provider == "ollama":
+                # Ollama native API for local models
+                base = self.base_url.replace("/v1", "")
+                r = requests.get(f"{base}/api/tags", timeout=5)
+                r.raise_for_status()
+                return [m["name"] for m in r.json().get("models", [])]
+            elif self.provider == "claude":
+                # Anthropic doesn't have a public models list endpoint
+                return [
+                    "claude-sonnet-4-latest",
+                    "claude-haiku-4-latest",
+                    "claude-opus-4-latest",
+                ]
+            elif self.format == "openai":
+                headers = {"Content-Type": "application/json"}
+                if self.api_key:
+                    headers["Authorization"] = f"Bearer {self.api_key}"
+                r = requests.get(
+                    f"{self.base_url}/models",
+                    headers=headers,
+                    timeout=10,
+                )
+                r.raise_for_status()
+                models = r.json().get("data", [])
+                names = sorted(m["id"] for m in models if isinstance(m, dict) and "id" in m)
+                return names
+        except Exception:
+            pass
+        # Fallback: return default model
+        info = PROVIDERS.get(self.provider, {})
+        default = info.get("default_model", "")
+        return [default] if default else []
+
     def complete(self, prompt: str, max_tokens: int = 256) -> str:
         if self.format == "anthropic":
             return self._complete_anthropic(prompt, max_tokens)

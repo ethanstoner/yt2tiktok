@@ -33,7 +33,7 @@ class CaptionPreview(ctk.CTkToplevel):
     PREVIEW_W = 360
     PREVIEW_H = 640
 
-    def __init__(self, master, video_path: str, transcript: list[dict], callback, y_var=None):
+    def __init__(self, master, video_path: str, transcript: list[dict], callback, y_var=None, background_image=None):
         super().__init__(master)
         self.title("Caption Preview")
         self.geometry(f"{self.PREVIEW_W + 40}x{self.PREVIEW_H + 160}")
@@ -47,14 +47,19 @@ class CaptionPreview(ctk.CTkToplevel):
         self.preset_name = "Opus Clean"
         self.frame_img = None
 
-        frame_path = _grab_frame(video_path)
-        if frame_path:
-            self.base_image = Image.open(frame_path).resize(
+        if background_image:
+            self.base_image = background_image.resize(
                 (self.PREVIEW_W, self.PREVIEW_H), Image.LANCZOS
             )
-            os.unlink(frame_path)
         else:
-            self.base_image = Image.new("RGB", (self.PREVIEW_W, self.PREVIEW_H), "#1a1a1a")
+            frame_path = _grab_frame(video_path) if video_path else None
+            if frame_path:
+                self.base_image = Image.open(frame_path).resize(
+                    (self.PREVIEW_W, self.PREVIEW_H), Image.LANCZOS
+                )
+                os.unlink(frame_path)
+            else:
+                self.base_image = Image.new("RGB", (self.PREVIEW_W, self.PREVIEW_H), "#1a1a1a")
 
         preset_frame = ctk.CTkFrame(self, fg_color="transparent")
         preset_frame.pack(fill="x", padx=10, pady=5)
