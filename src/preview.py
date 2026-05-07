@@ -158,9 +158,16 @@ class CaptionPreview(ctk.CTkToplevel):
         stroke_w = max(1, preset["border"] * self.PREVIEW_W // 1080)
         line_left = center_x - full_w // 2
 
+        # Convert ASS BGR highlight color to RGB hex
+        raw = preset["highlight_color"].replace("&H", "").replace("&h", "")
+        if len(raw) == 8:
+            raw = raw[2:]
+        b, g, r = raw[0:2], raw[2:4], raw[4:6]
+        highlight_hex = f"#{r}{g}{b}"
+
         for i, word in enumerate(plain_words):
             is_active = phrase_indices[i] == active_idx
-            fill = "#78FF57" if is_active else "white"
+            fill = highlight_hex if is_active else "white"
 
             if i == 0:
                 word_left = line_left
