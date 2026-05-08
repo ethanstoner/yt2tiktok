@@ -20,6 +20,7 @@ class AppState:
         self.preset = ctk.StringVar(value=cfg.get("preset"))
         self.caption_y = ctk.DoubleVar(value=cfg.get("caption_y"))
         self.transcription_status = ctk.StringVar(value="")
+        self.keep_source_video = ctk.BooleanVar(value=cfg.get("keep_source_video"))
 
         # Upload tab
         self.tk_cookie = ctk.StringVar(value=uploader.load_last_cookie_path())
@@ -59,6 +60,7 @@ class AppState:
             (self.llm_api_key, "llm_api_key"),
             (self.llm_model, "llm_model"),
             (self.llm_base_url, "llm_base_url"),
+            (self.keep_source_video, "keep_source_video"),
         ]
         for var, key in persist_list:
             var.trace_add("write", lambda *_, k=key, v=var: cfg.set(k, v.get()))

@@ -27,6 +27,7 @@ DEFAULTS = {
     "headless": True,
     "window_geometry": "750x900",
     "last_cookie_path": "",
+    "keep_source_video": False,
     "onboarding_completed": False,
 }
 

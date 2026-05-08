@@ -55,10 +55,13 @@ class App(ctk.CTk):
         self.tabview.add("Upload")
         self.tabview.add("Settings")
 
-        # Build tabs
+        # Build tabs — force geometry update between each to prevent flicker
         self.clip_tab = ClipTab(self.tabview.tab("Clip"), self.app_state, workers)
+        self.update_idletasks()
         self.upload_tab = UploadTab(self.tabview.tab("Upload"), self.app_state, workers)
+        self.update_idletasks()
         self.settings_tab = SettingsTab(self.tabview.tab("Settings"), self.app_state, self)
+        self.update_idletasks()
 
         # Log panel
         self.log_panel = LogPanel(self)
@@ -68,11 +71,20 @@ class App(ctk.CTk):
         self.status_bar = StatusBar(self)
         self.status_bar.pack(fill="x", side="bottom")
 
+        # Debounced tab switching to prevent rapid-click glitches
+        self._tab_switch_pending = False
+        def _safe_set_tab(name):
+            if self._tab_switch_pending:
+                return
+            self._tab_switch_pending = True
+            self.tabview.set(name)
+            self.after(150, lambda: setattr(self, '_tab_switch_pending', False))
+
         # Keyboard shortcuts
         self.bind("<Control-Return>", lambda e: self.clip_tab._on_clip())
-        self.bind("<Control-Key-1>", lambda e: self.tabview.set("Clip"))
-        self.bind("<Control-Key-2>", lambda e: self.tabview.set("Upload"))
-        self.bind("<Control-Key-3>", lambda e: self.tabview.set("Settings"))
+        self.bind("<Control-Key-1>", lambda e: _safe_set_tab("Clip"))
+        self.bind("<Control-Key-2>", lambda e: _safe_set_tab("Upload"))
+        self.bind("<Control-Key-3>", lambda e: _safe_set_tab("Settings"))
         self.bind("<Control-l>", lambda e: self.log_panel._toggle())
 
         # Check FFmpeg
@@ -94,8 +106,8 @@ class App(ctk.CTk):
         self._poll_queues()
 
     def _show_onboarding(self):
-        from src.ui.onboarding import OnboardingDialog
-        OnboardingDialog(self)
+        from src.ui.onboarding import OnboardingPanel
+        OnboardingPanel(self)
 
     def _on_update_check(self, version, url):
         if version:

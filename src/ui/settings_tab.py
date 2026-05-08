@@ -176,9 +176,9 @@ class SettingsTab:
             messagebox.showinfo("Error Log", "No error log file found yet.")
 
     def _run_onboarding(self):
-        from src.ui.onboarding import OnboardingDialog
-        OnboardingDialog(self.app)
+        from src.ui.onboarding import OnboardingPanel
+        OnboardingPanel(self.app)
 
     def _show_about(self):
-        from src.ui.about_dialog import AboutDialog
-        AboutDialog(self.app)
+        from src.ui.about_dialog import AboutPanel
+        AboutPanel(self.app)

@@ -162,6 +162,16 @@ def clipper_worker(
             except OSError:
                 pass
 
+        # Optionally remove source video to save disk space
+        if url and not state.keep_source_video.get():
+            try:
+                source_file = os.path.join(target_dir, f"{title}.mp4")
+                if os.path.exists(source_file):
+                    os.unlink(source_file)
+                    log("Source video removed (enable 'Keep original video' to retain)")
+            except OSError:
+                pass
+
         state.clip_dir.set(target_dir)
         state.title.set(title)
         if captions_enabled and transcript:

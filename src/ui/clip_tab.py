@@ -102,6 +102,12 @@ class ClipTab:
         ctk.CTkSegmentedButton(right_opt, values=["Random", "Natural Pause", "Cliffhanger"], variable=state.cut_mode).pack(anchor="w", pady=(2, 0))
         Tooltip(cut_label, "Random: fixed 60-70s clips\nNatural Pause: cuts at silence gaps\nCliffhanger: LLM picks suspenseful cut points")
 
+        # --- Extra Options ---
+        extra_frame = ctk.CTkFrame(scroll, fg_color="transparent")
+        extra_frame.pack(fill="x", padx=SP_12, pady=(SP_4, 0))
+        ctk.CTkCheckBox(extra_frame, text="Keep original video after clipping",
+                        variable=state.keep_source_video).pack(anchor="w")
+
         # --- Captions Section ---
         Divider(scroll).pack(fill="x", padx=SP_12, pady=SP_12)
         SectionHeader(scroll, "Captions").pack(anchor="w", padx=SP_12)
