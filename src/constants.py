@@ -1,0 +1,36 @@
+APP_VERSION = "1.0.0"
+GITHUB_REPO_URL = "https://github.com/ethanstoner/yt2tiktok"
+
+BG_DARK = "#1a1a1a"
+BG_CARD = "#242424"
+BG_INPUT = "#2a2a2a"
+ACCENT_BLUE = "#3b82f6"
+SUCCESS = "#22c55e"
+ERROR = "#ef4444"
+WARNING = "#f59e0b"
+TEXT_PRIMARY = "#ffffff"
+TEXT_SECONDARY = "#a1a1aa"
+TEXT_MUTED = "#71717a"
+
+SP_4 = 4
+SP_8 = 8
+SP_12 = 12
+SP_16 = 16
+SP_20 = 20
+SP_24 = 24
+SP_32 = 32
+
+FONT_HEADER = 20
+FONT_SECTION = 16
+FONT_LABEL = 14
+FONT_BODY = 13
+FONT_MUTED = 12
+
+RADIUS_CARD = 8
+RADIUS_BUTTON = 6
+RADIUS_INPUT = 4
+
+LOG_INFO = "#22c55e"
+LOG_WARNING = "#f59e0b"
+LOG_ERROR = "#ef4444"
+LOG_DEBUG = "#a1a1aa"

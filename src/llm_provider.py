@@ -1,4 +1,9 @@
 import requests
+from requests.exceptions import HTTPError, ConnectionError, Timeout
+
+class LLMError(Exception):
+    pass
+
 
 PROVIDERS = {
     "groq": {
@@ -102,6 +107,20 @@ class LLMProvider:
             return self._complete_anthropic(prompt, max_tokens)
         return self._complete_openai(prompt, max_tokens)
 
+    def _handle_http_error(self, r: requests.Response):
+        status = r.status_code
+        if status == 401:
+            raise LLMError(f"Invalid API key for {self.provider}. Check your key in Settings.")
+        elif status == 403:
+            raise LLMError(f"Access denied by {self.provider}. Your key may lack permissions.")
+        elif status == 404:
+            raise LLMError(f"Model '{self.model}' not found on {self.provider}.")
+        elif status == 429:
+            raise LLMError(f"Rate limited by {self.provider}. Wait a moment and try again.")
+        elif status >= 500:
+            raise LLMError(f"{self.provider} server error ({status}). Try again later.")
+        r.raise_for_status()
+
     def _complete_openai(self, prompt: str, max_tokens: int) -> str:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -112,14 +131,20 @@ class LLMProvider:
             "max_tokens": max_tokens,
             "temperature": 0.3,
         }
-        r = requests.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"].strip()
+        try:
+            r = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30,
+            )
+            if not r.ok:
+                self._handle_http_error(r)
+            return r.json()["choices"][0]["message"]["content"].strip()
+        except ConnectionError:
+            raise LLMError(f"Cannot connect to {self.provider}. Check your base URL and network.")
+        except Timeout:
+            raise LLMError(f"{self.provider} request timed out after 30s.")
 
     def _complete_anthropic(self, prompt: str, max_tokens: int) -> str:
         headers = {
@@ -132,11 +157,17 @@ class LLMProvider:
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
         }
-        r = requests.post(
-            f"{self.base_url}/messages",
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-        r.raise_for_status()
-        return r.json()["content"][0]["text"].strip()
+        try:
+            r = requests.post(
+                f"{self.base_url}/messages",
+                headers=headers,
+                json=payload,
+                timeout=30,
+            )
+            if not r.ok:
+                self._handle_http_error(r)
+            return r.json()["content"][0]["text"].strip()
+        except ConnectionError:
+            raise LLMError(f"Cannot connect to Anthropic API. Check your network.")
+        except Timeout:
+            raise LLMError(f"Anthropic API request timed out after 30s.")
