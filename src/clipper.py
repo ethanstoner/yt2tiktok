@@ -3,7 +3,6 @@ import random
 import shutil
 import subprocess
 import sys
-import platform
 import textwrap
 from pathlib import Path
 
@@ -36,15 +35,22 @@ def sanitize_title(title: str) -> str:
     return title.strip().rstrip(". ")
 
 def get_video_duration(video_path: str) -> float:
+    if FFPROBE_CMD is None:
+        raise RuntimeError("ffprobe not found in PATH. Install FFmpeg.")
     cmd = [FFPROBE_CMD, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_path]
     result = subprocess.run(cmd, capture_output=True, text=True)
     return float(result.stdout.strip())
 
 def get_video_dimensions(video_path: str) -> tuple[int, int]:
+    if FFPROBE_CMD is None:
+        raise RuntimeError("ffprobe not found in PATH. Install FFmpeg.")
     cmd = [FFPROBE_CMD, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", video_path]
     result = subprocess.run(cmd, capture_output=True, text=True)
-    w, h = result.stdout.strip().split("x")
-    return int(w), int(h)
+    try:
+        w, h = result.stdout.strip().split("x")
+        return int(w), int(h)
+    except (ValueError, AttributeError):
+        raise RuntimeError(f"Could not determine video dimensions: {result.stdout.strip()}")
 
 
 def wrap_text_to_fit(text: str, max_width_px: int, max_height_px: int, max_fontsize: int = 60, min_fontsize: int = 18) -> tuple[str, int, int]:
@@ -238,20 +244,20 @@ def calculate_cut_points(
     return clips
 
 
-def process_clip(video_path: str, title: str, idx: int, total: int, start: float, duration: float, target_dir: str, mode: str = "blurred", caption_ass: str = None, log_fn=None) -> str | None:
+def process_clip(video_path: str, title: str, idx: int, total: int, start: float, duration: float, target_dir: str, mode: str = "blurred", caption_ass: str = None, log_fn=None, dimensions: tuple[int, int] = None) -> str | None:
     out = os.path.join(target_dir, f"{title}_clip_{idx}.mp4")
     os.makedirs(target_dir, exist_ok=True)
-    orig_w, orig_h = get_video_dimensions(video_path)
+    orig_w, orig_h = dimensions if dimensions is not None else get_video_dimensions(video_path)
     scaled_h = int(orig_h * (1080 / orig_w))
     pad_y = int((1920 - scaled_h) / 2)
     top_bar_height = pad_y
     wrapped_title, title_fontsize, num_lines = wrap_text_to_fit(title, max_width_px=1080 - 80, max_height_px=top_bar_height, max_fontsize=80)
-    safe_font = FONT_PATH.replace("\\", "/").replace(":", "\\:")
     safe_title = wrapped_title.replace("'", "\\'")
     bottom_fontsize = 100
     borderw = 5
     text_pad = borderw * 2 + 8
     if FONT_PATH:
+        safe_font = FONT_PATH.replace("\\", "/").replace(":", "\\:")
         font = ImageFont.truetype(FONT_PATH, title_fontsize)
         base_h = font.getbbox("A")[3] - font.getbbox("A")[1]
         line_spacing = int(base_h * 0.25)
@@ -261,6 +267,7 @@ def process_clip(video_path: str, title: str, idx: int, total: int, start: float
         bottom_h = font_bottom.getbbox("A")[3] - font_bottom.getbbox("A")[1]
         bottom_text_y = (1920 - pad_y) + (pad_y - bottom_h) // 2 + text_pad
     else:
+        safe_font = ""
         top_text_y = pad_y // 4
         bottom_text_y = 1920 - pad_y + pad_y // 4
     safe_ass = ""
@@ -268,26 +275,31 @@ def process_clip(video_path: str, title: str, idx: int, total: int, start: float
     if caption_ass:
         safe_ass = caption_ass.replace("\\", "/").replace(":", "\\:")
     part_label = f"Part {idx}"
-    text_filters = (
-        f"drawtext=fontfile='{safe_font}':text='{safe_title}':fontcolor=white:"
-        f"fontsize={title_fontsize}:x=(w-text_w)/2:y={top_text_y}:"
-        f"borderw={borderw}:bordercolor=black:line_spacing=12:text_align=center,"
-        f"drawtext=fontfile='{safe_font}':text='{part_label}':fontcolor=white:"
-        f"fontsize={bottom_fontsize}:x=(w-text_w)/2:y={bottom_text_y}:"
-        f"borderw={borderw}:bordercolor=black"
-    )
+    if FONT_PATH:
+        text_filters = (
+            f"drawtext=fontfile='{safe_font}':text='{safe_title}':fontcolor=white:"
+            f"fontsize={title_fontsize}:x=(w-text_w)/2:y={top_text_y}:"
+            f"borderw={borderw}:bordercolor=black:line_spacing=12:text_align=center,"
+            f"drawtext=fontfile='{safe_font}':text='{part_label}':fontcolor=white:"
+            f"fontsize={bottom_fontsize}:x=(w-text_w)/2:y={bottom_text_y}:"
+            f"borderw={borderw}:bordercolor=black"
+        )
+    else:
+        text_filters = ""
+    ass_suffix = f",ass='{safe_ass}':fontsdir='{fonts_dir}'" if caption_ass else ""
+    text_and_ass = (f",{text_filters}" if text_filters else "") + ass_suffix
     if mode == "blurred":
         filter_chain = (
             "[0:v]scale=540:960,gblur=sigma=30,scale=1080:1920:flags=lanczos,setsar=1[bg];"
             "[0:v]scale=1080:ih*1080/iw:force_original_aspect_ratio=decrease,setsar=1[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,{text_filters}" + (f",ass='{safe_ass}':fontsdir='{fonts_dir}'" if caption_ass else "") + "[v]"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2{text_and_ass}[v]"
         )
         filter_flag = "-filter_complex"
         map_args = ["-map", "[v]", "-map", "0:a?"]
     else:
         filter_chain = (
             "scale=1080:ih*1080/iw:force_original_aspect_ratio=decrease,"
-            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,{text_filters}" + (f",ass='{safe_ass}':fontsdir='{fonts_dir}'" if caption_ass else "")
+            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black{text_and_ass}"
         )
         filter_flag = "-vf"
         map_args = []
@@ -348,6 +360,8 @@ def split_video(
         encoder = "GPU (NVENC)" if _USE_NVENC else "CPU (libx264)"
         log_fn(f"Splitting into {total} clips using {encoder} ({parallel} workers)...")
 
+    video_dimensions = get_video_dimensions(video_path)
+
     completed = [0]
     lock = _threading.Lock()
 
@@ -357,6 +371,7 @@ def split_video(
         result = process_clip(
             video_path, title, i, total, clip_start, clip_dur,
             target_dir, mode=mode, caption_ass=ass_path, log_fn=log_fn,
+            dimensions=video_dimensions,
         )
         with lock:
             completed[0] += 1
