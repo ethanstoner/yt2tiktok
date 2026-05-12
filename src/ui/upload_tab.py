@@ -33,7 +33,7 @@ class UploadTab:
         )).pack(side="right")
         ctk.CTkButton(cookie_row, text="Verify", width=60, command=lambda: threading.Thread(
             target=self.workers.verify_worker,
-            args=(state.tk_cookie.get(), state.headless.get(), state.tk_status),
+            args=(state.tk_cookie.get(), state.headless.get(), state.tk_status, self.status_label),
             daemon=True,
         ).start()).pack(side="right", padx=SP_4)
 

@@ -40,7 +40,7 @@ def clipper_worker(
     url, local_path, cookie_file, mode, cut_mode,
     captions_enabled, preset_name, y_position,
     llm_instance,
-    state, clip_btn, preview_btn,
+    state, clip_btn, preview_btn, cancel_btn,
 ):
     reset_cancel()
     try:
@@ -60,7 +60,7 @@ def clipper_worker(
             log("Clipping cancelled.")
             return
 
-        state.video_path.set(video_path)
+        clip_btn.winfo_toplevel().after(0, lambda v=video_path: state.video_path.set(v))
 
         duration = clipper.get_video_duration(video_path)
         est_clips = int(duration / 65) + 1
@@ -86,15 +86,20 @@ def clipper_worker(
 
         transcript = None
         if captions_enabled or cut_mode != "random":
-            state.transcription_status.set("Transcribing...")
+            clip_btn.winfo_toplevel().after(0, lambda: state.transcription_status.set("Transcribing..."))
             try:
                 transcript = transcriber.transcribe(video_path, url=url if url else None, log_fn=log)
-                state.transcription_status.set(f"{len(transcript)} words detected")
-                state.transcript_count.set(str(len(transcript)))
-                preview_btn.configure(state="normal")
+                word_count = len(transcript)
+                count_str = str(word_count)
+                status_str = f"{word_count} words detected"
+                def _on_transcription_done(s=status_str, c=count_str):
+                    state.transcription_status.set(s)
+                    state.transcript_count.set(c)
+                    preview_btn.configure(state="normal")
+                clip_btn.winfo_toplevel().after(0, _on_transcription_done)
             except Exception as e:
                 log(f"Transcription failed: {e}")
-                state.transcription_status.set("Transcription failed")
+                clip_btn.winfo_toplevel().after(0, lambda: state.transcription_status.set("Transcription failed"))
                 transcript = None
                 if cut_mode != "random":
                     log("Falling back to random cuts")
@@ -172,17 +177,24 @@ def clipper_worker(
             except OSError:
                 pass
 
-        state.clip_dir.set(target_dir)
-        state.title.set(title)
-        if captions_enabled and transcript:
-            state.transcription_status.set("Captions ready")
+        root = clip_btn.winfo_toplevel()
+        _td, _t = target_dir, title
+        def _on_clip_complete(td=_td, t=_t):
+            state.clip_dir.set(td)
+            state.title.set(t)
+            if captions_enabled and transcript:
+                state.transcription_status.set("Captions ready")
+        root.after(0, _on_clip_complete)
         log(f"Clipping complete: {total} clips in {target_dir}")
         progress("done")
 
     except Exception as e:
         log(f"Error: {e}")
     finally:
-        clip_btn.configure(state="normal")
+        def _restore_buttons():
+            cancel_btn.pack_forget()
+            clip_btn.configure(state="normal", text="Start Clipping")
+        clip_btn.winfo_toplevel().after(0, _restore_buttons)
 
 
 def uploader_worker(clips_dir, title, total_clips, cookie_file, caption_template, start_time, interval, headless, upload_btn):
@@ -190,7 +202,7 @@ def uploader_worker(clips_dir, title, total_clips, cookie_file, caption_template
         interval_hours = float(interval)
     except ValueError:
         log("Invalid interval value.")
-        upload_btn.configure(state="normal")
+        upload_btn.winfo_toplevel().after(0, lambda: upload_btn.configure(state="normal"))
         return
     try:
         successful, total = uploader.upload_clips(
@@ -203,13 +215,14 @@ def uploader_worker(clips_dir, title, total_clips, cookie_file, caption_template
     except Exception as e:
         log(f"Upload error: {e}")
     finally:
-        upload_btn.configure(state="normal")
+        upload_btn.winfo_toplevel().after(0, lambda: upload_btn.configure(state="normal"))
 
 
-def verify_worker(cookie_file, headless, status_var):
-    status_var.set("Verifying...")
+def verify_worker(cookie_file, headless, status_var, widget):
+    widget.winfo_toplevel().after(0, lambda: status_var.set("Verifying..."))
     username = uploader.verify_cookies(cookie_file, headless=headless, log_fn=log)
     if username:
-        status_var.set(f"Logged in: @{username}")
+        uname = username
+        widget.winfo_toplevel().after(0, lambda u=uname: status_var.set(f"Logged in: @{u}"))
     else:
-        status_var.set("Verification failed")
+        widget.winfo_toplevel().after(0, lambda: status_var.set("Verification failed"))

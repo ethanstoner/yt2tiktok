@@ -300,7 +300,7 @@ class ClipTab:
                 self.state.yt_cookie.get().strip(), self.state.mode.get(), cut,
                 self.state.captions_enabled.get(), self.state.preset.get(), self.state.caption_y.get(),
                 self._get_llm(),
-                self.state, self.clip_btn, self.preview_btn,
+                self.state, self.clip_btn, self.preview_btn, self.cancel_btn,
             ),
             daemon=True,
         ).start()
@@ -309,3 +309,4 @@ class ClipTab:
         self.workers.request_cancel()
         self.cancel_btn.pack_forget()
         self.clip_btn.configure(state="normal", text="Start Clipping")
+        self.preview_btn.configure(state="normal")
