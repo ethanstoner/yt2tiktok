@@ -51,7 +51,11 @@ def parse_cookies_file(cookie_file_path: str) -> list[dict] | None:
                 parts = line.strip().split("\t")
                 if len(parts) == 7:
                     domain, _, path, _, expiry, name, value = parts
-                    cookies.append({"name": name, "value": value, "domain": domain, "path": path, "expiry": int(expiry)})
+                    try:
+                        expiry_int = int(expiry)
+                    except (ValueError, TypeError):
+                        expiry_int = 0
+                    cookies.append({"name": name, "value": value, "domain": domain, "path": path, "expiry": expiry_int})
     except Exception:
         return None
     return cookies if cookies else None
@@ -126,7 +130,7 @@ def verify_cookies(cookie_file: str, headless: bool = True, log_fn=None) -> str 
             log_fn(f"Verification failed: {str(e).splitlines()[0]}")
         return None
     finally:
-        if driver and headless:
+        if driver:
             driver.quit()
 
 
@@ -273,8 +277,6 @@ def upload_clips(clips_dir: str, title: str, total_clips: int, cookie_file: str,
     options = webdriver.ChromeOptions()
     if headless:
         options.add_argument("--headless")
-    else:
-        options.add_experimental_option("detach", True)
     options.add_argument("--log-level=3")
 
     driver = None
@@ -327,7 +329,7 @@ def upload_clips(clips_dir: str, title: str, total_clips: int, cookie_file: str,
         if log_fn:
             log_fn(f"Upload session error: {e}")
     finally:
-        if driver and headless:
+        if driver:
             driver.quit()
 
     if failed_clips:
