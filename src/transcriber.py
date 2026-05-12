@@ -59,48 +59,49 @@ def _transcribe_faster_whisper(audio_path: str, log_fn=None) -> list[dict]:
     out_file = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
     out_file.close()
 
-    for model_name in _WHISPER_MODELS:
-        if log_fn:
-            log_fn(f"Trying faster-whisper ({model_name})...")
-
-        # Write the worker script to a temp file
-        script_file = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False, encoding="utf-8")
-        script_file.write(_WORKER_SCRIPT)
-        script_file.close()
-
-        try:
-            result = subprocess.run(
-                [python, script_file.name, model_name, audio_path, out_file.name],
-                capture_output=True, text=True, timeout=600,
-            )
-
-            if result.returncode == 0 and os.path.exists(out_file.name):
-                with open(out_file.name, "r", encoding="utf-8") as f:
-                    words = json.load(f)
-                if words:
-                    if log_fn:
-                        log_fn(f"Transcribed {len(words)} words using {model_name}")
-                    return words
-
-            if log_fn:
-                reason = result.stderr.strip()[-200:] if result.stderr else f"exit code {result.returncode}"
-                log_fn(f"{model_name} failed ({reason}), trying smaller model...")
-
-        except subprocess.TimeoutExpired:
-            if log_fn:
-                log_fn(f"{model_name} timed out, trying smaller model...")
-        finally:
-            try:
-                os.unlink(script_file.name)
-            except OSError:
-                pass
-
     try:
-        os.unlink(out_file.name)
-    except OSError:
-        pass
+        for model_name in _WHISPER_MODELS:
+            if log_fn:
+                log_fn(f"Trying faster-whisper ({model_name})...")
 
-    raise TranscriptionError("All whisper models failed")
+            # Write the worker script to a temp file
+            script_file = tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False, encoding="utf-8")
+            script_file.write(_WORKER_SCRIPT)
+            script_file.close()
+
+            try:
+                result = subprocess.run(
+                    [python, script_file.name, model_name, audio_path, out_file.name],
+                    capture_output=True, text=True, timeout=600,
+                )
+
+                if result.returncode == 0 and os.path.exists(out_file.name):
+                    with open(out_file.name, "r", encoding="utf-8") as f:
+                        words = json.load(f)
+                    if words:
+                        if log_fn:
+                            log_fn(f"Transcribed {len(words)} words using {model_name}")
+                        return words
+
+                if log_fn:
+                    reason = result.stderr.strip()[-200:] if result.stderr else f"exit code {result.returncode}"
+                    log_fn(f"{model_name} failed ({reason}), trying smaller model...")
+
+            except subprocess.TimeoutExpired:
+                if log_fn:
+                    log_fn(f"{model_name} timed out, trying smaller model...")
+            finally:
+                try:
+                    os.unlink(script_file.name)
+                except OSError:
+                    pass
+
+        raise TranscriptionError("All whisper models failed")
+    finally:
+        try:
+            os.unlink(out_file.name)
+        except OSError:
+            pass
 
 
 def _transcribe_parakeet(audio_path: str, log_fn=None) -> list[dict]:

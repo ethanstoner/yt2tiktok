@@ -158,14 +158,16 @@ class SettingsTab:
         if path:
             try:
                 cfg.import_config(path)
-                messagebox.showinfo("Import", "Settings imported. Restart to apply all changes.")
+                self.state.reload_from_config()
+                messagebox.showinfo("Import", "Settings imported successfully.")
             except Exception as e:
                 messagebox.showerror("Import Error", str(e))
 
     def _reset_defaults(self):
         if messagebox.askyesno("Reset", "Reset all settings to defaults?"):
             cfg.reset_to_defaults()
-            messagebox.showinfo("Reset", "Settings reset. Restart to apply all changes.")
+            self.state.reload_from_config()
+            messagebox.showinfo("Reset", "Settings reset to defaults.")
 
     def _open_error_log(self):
         import os

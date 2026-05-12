@@ -5,6 +5,8 @@ from src import uploader
 
 class AppState:
     def __init__(self):
+        self._initializing = True
+
         # Clip tab
         self.url = ctk.StringVar()
         self.local_path = ctk.StringVar()
@@ -43,6 +45,7 @@ class AppState:
 
         # Persist settings on change
         self._setup_auto_persist()
+        self._initializing = False
 
     def _setup_auto_persist(self):
         persist_list = [
@@ -63,4 +66,28 @@ class AppState:
             (self.keep_source_video, "keep_source_video"),
         ]
         for var, key in persist_list:
-            var.trace_add("write", lambda *_, k=key, v=var: cfg.set(k, v.get()))
+            var.trace_add("write", lambda *_, k=key, v=var: (
+                cfg.set(k, v.get()) if not self._initializing else None
+            ))
+
+    def reload_from_config(self):
+        """Reload all persisted vars from the current config file (after import/reset)."""
+        self._initializing = True
+        try:
+            self.mode.set(cfg.get("mode"))
+            self.cut_mode.set(cfg.get("cut_mode"))
+            self.captions_enabled.set(cfg.get("captions_enabled"))
+            self.preset.set(cfg.get("preset"))
+            self.caption_y.set(cfg.get("caption_y"))
+            self.headless.set(cfg.get("headless"))
+            self.caption_template.set(cfg.get("caption_template"))
+            self.start_time.set(cfg.get("start_time"))
+            self.interval.set(cfg.get("interval"))
+            self.llm_enabled.set(cfg.get("llm_enabled"))
+            self.llm_provider.set(cfg.get("llm_provider"))
+            self.llm_api_key.set(cfg.get("llm_api_key"))
+            self.llm_model.set(cfg.get("llm_model"))
+            self.llm_base_url.set(cfg.get("llm_base_url"))
+            self.keep_source_video.set(cfg.get("keep_source_video"))
+        finally:
+            self._initializing = False
