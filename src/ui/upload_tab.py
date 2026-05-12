@@ -119,6 +119,14 @@ class UploadTab:
         if not self.state.clip_dir.get() or not os.path.isdir(self.state.clip_dir.get()):
             messagebox.showerror("Error", "Select a valid clip folder.")
             return
+        valid, err = validate_time_format(self.state.start_time.get())
+        if not valid:
+            messagebox.showerror("Invalid Start Time", err)
+            return
+        valid, err = validate_interval(self.state.interval.get())
+        if not valid:
+            messagebox.showerror("Invalid Interval", err)
+            return
         self.upload_btn.configure(state="disabled", text="Uploading...")
         clip_count = len([f for f in os.listdir(self.state.clip_dir.get())
                          if f.endswith(".mp4") and "_clip_" in f])

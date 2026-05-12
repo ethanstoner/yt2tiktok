@@ -9,8 +9,8 @@ from src import captioner
 from src.constants import *
 from src.llm_provider import LLMProvider
 from src.preview import CaptionPreview
-from src.ui.widgets import SectionHeader, Divider, FilePickerRow, Tooltip, ValidatedEntry
-from src.validators import validate_youtube_url
+from src.ui.widgets import SectionHeader, Divider, FilePickerRow, Tooltip
+from src.validators import validate_youtube_url, validate_file_path
 
 
 def _ass_color_to_hex(ass_color: str) -> str:
@@ -289,6 +289,21 @@ class ClipTab:
                        background_image=bg if not vp else None, video_title=vid_title)
 
     def _on_clip(self):
+        url = self.state.url.get().strip()
+        local_path = self.state.local_path.get().strip()
+        if url:
+            valid, err = validate_youtube_url(url)
+            if not valid:
+                messagebox.showerror("Invalid URL", err)
+                return
+        elif local_path:
+            valid, err = validate_file_path(local_path, extensions=[".mp4"])
+            if not valid:
+                messagebox.showerror("Invalid File", err)
+                return
+        else:
+            messagebox.showerror("Error", "Enter a YouTube URL or select a local file.")
+            return
         self.clip_btn.configure(state="disabled", text="Clipping...")
         self.cancel_btn.pack(side="right", padx=(SP_4, 0))
         self.preview_btn.configure(state="disabled")
