@@ -1,4 +1,5 @@
 import os
+import re
 import random
 import shutil
 import subprocess
@@ -178,10 +179,12 @@ def _find_cliffhanger(transcript: list[dict], window_start: float, window_end: f
     )
     try:
         response = llm.complete(prompt)
-        idx = int(response.strip().split()[0])
-        if 0 <= idx < len(words_in_window):
-            _, w = words_in_window[idx]
-            return w["end"]
+        match = re.search(r'\d+', response.strip())
+        if match:
+            idx = int(match.group())
+            if 0 <= idx < len(words_in_window):
+                _, w = words_in_window[idx]
+                return w["end"]
     except Exception:
         pass
     return None
@@ -204,8 +207,9 @@ def calculate_cut_points(
         if len(clips) >= 2 and clips[-1][1] < CLIP_MIN:
             prev_start, prev_dur = clips[-2]
             _, last_dur = clips[-1]
-            clips[-2] = (prev_start, prev_dur + last_dur)
-            clips.pop()
+            if prev_dur + last_dur <= CLIP_MAX * 2:
+                clips[-2] = (prev_start, prev_dur + last_dur)
+                clips.pop()
         return clips
 
     clips = []
@@ -238,8 +242,9 @@ def calculate_cut_points(
     if len(clips) >= 2 and clips[-1][1] < CLIP_MIN:
         prev_start, prev_dur = clips[-2]
         _, last_dur = clips[-1]
-        clips[-2] = (prev_start, prev_dur + last_dur)
-        clips.pop()
+        if prev_dur + last_dur <= CLIP_MAX * 2:
+            clips[-2] = (prev_start, prev_dur + last_dur)
+            clips.pop()
 
     return clips
 

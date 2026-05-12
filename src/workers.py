@@ -1,3 +1,4 @@
+import glob
 import os
 import queue
 import threading
@@ -170,10 +171,14 @@ def clipper_worker(
         # Optionally remove source video to save disk space
         if url and not state.keep_source_video.get():
             try:
-                source_file = os.path.join(target_dir, f"{title}.mp4")
-                if os.path.exists(source_file):
-                    os.unlink(source_file)
-                    log("Source video removed (enable 'Keep original video' to retain)")
+                # Find the source video (could be .mp4, .mkv, .webm, etc.)
+                pattern = os.path.join(target_dir, f"{title}.*")
+                for source_file in glob.glob(pattern):
+                    # Only delete video files, not clip files
+                    if "_clip_" not in os.path.basename(source_file):
+                        os.unlink(source_file)
+                        log("Source video removed (enable 'Keep original video' to retain)")
+                        break
             except OSError:
                 pass
 
