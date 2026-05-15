@@ -475,12 +475,157 @@ def upload_clips(clips_dir: str, title: str, total_clips: int, account_id: str =
     return successful, total
 
 
-def upload_clip(driver, clip_path, description, schedule_time,
-                visibility: str = "public", log_fn=None) -> tuple[bool, str]:
+_VISIBILITY_LABELS = {
+    "public": "Everyone",
+    "friends": "Friends",
+    "private": "Only you",
+}
+
+
+def _studio_post(driver, video_path: str, description: str,
+                 visibility: str = "private", log_fn=None) -> tuple[bool, str]:
+    """Immediate post via TikTok Studio (verified live 2026-05-15).
+
+    Scheduling is intentionally NOT handled here — Phase 3's persistent
+    scheduler owns timing; Phase 1 only needs a reliable immediate post.
+    `visibility`: 'public' | 'friends' | 'private' (default private =
+    'Only you', the no-public-exposure verification path).
+    """
+    import time as _t
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.keys import Keys
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
+    def _log(m):
+        if log_fn:
+            log_fn(m)
+
+    try:
+        driver.get("https://www.tiktok.com/tiktokstudio/upload")
+        file_input = _find(driver, SELECTORS_FB["file_input"], timeout=30)
+        file_input.send_keys(video_path)
+        _log("Clip sent; waiting for TikTok to finish processing...")
+
+        # Wait until the upload-status widget stops reporting progress.
+        deadline = _t.time() + UPLOAD_TIMEOUT
+        while _t.time() < deadline:
+            try:
+                el = driver.find_element(
+                    By.CSS_SELECTOR, '[data-e2e="upload_status_container"]')
+                txt = (el.text or "")
+            except Exception:
+                txt = ""
+            if txt and "%" not in txt and "left" not in txt.lower():
+                break
+            _t.sleep(2)
+        _log("Processing complete.")
+
+        # Dismiss the react-joyride coach-mark tour: its full-page overlay
+        # (z-index 1001) intercepts every click. Click any "Got it"/"Skip"
+        # tour buttons, then hard-remove leftover joyride layers via JS.
+        for _ in range(4):
+            clicked = False
+            for label in ("Got it", "Skip", "Next", "Close"):
+                try:
+                    b = driver.find_element(
+                        By.XPATH, f"//button[normalize-space()='{label}']")
+                    driver.execute_script("arguments[0].click();", b)
+                    _t.sleep(0.8)
+                    clicked = True
+                    break
+                except Exception:
+                    continue
+            if not clicked:
+                break
+        driver.execute_script(
+            "document.querySelectorAll("
+            "'.react-joyride__overlay,.react-joyride__spotlight,"
+            "[data-test-id=\"overlay\"]').forEach(e=>e.remove());")
+
+        # Dismiss any "automatic content checks" / info modal if present.
+        for label in ("Cancel", "Got it", "Not now"):
+            try:
+                btn = driver.find_element(
+                    By.XPATH,
+                    f"//div[contains(@class,'modal') or @role='dialog']"
+                    f"//button[normalize-space()='{label}']")
+                btn.click()
+                _t.sleep(1)
+                break
+            except Exception:
+                continue
+
+        # Caption: clear the auto-filled filename, type our description.
+        cap = _find(driver, SELECTORS_FB["caption_editor"], timeout=30)
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'});", cap)
+        _t.sleep(0.3)
+        driver.execute_script("arguments[0].click();", cap)
+        cap.send_keys(Keys.CONTROL, "a")
+        cap.send_keys(Keys.DELETE)
+        _t.sleep(0.5)
+        cap.send_keys(description)
+
+        # Visibility ("Who can see this post").
+        want = _VISIBILITY_LABELS.get(visibility, "Only you")
+        if want != "Everyone":
+            try:
+                vis = driver.find_element(
+                    By.CSS_SELECTOR, '[data-e2e="video_visibility_container"]')
+                vis.click()
+                _t.sleep(1)
+                opt = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable(
+                        (By.XPATH, f"//*[normalize-space()='{want}']")))
+                opt.click()
+                _t.sleep(1)
+                _log(f"Visibility set to '{want}'.")
+            except Exception as e:
+                _save_debug(driver, "studio_visibility_fail")
+                return (False, f"could not set visibility '{want}': {e}")
+
+        # Post.
+        post_btn = _find(driver, SELECTORS_FB["post_button"], timeout=30)
+        driver.execute_script("arguments[0].click();", post_btn)
+        _log("Post submitted; waiting for confirmation...")
+
+        # Success = redirect to /tiktokstudio/content or a success toast.
+        ok = False
+        end = _t.time() + 120
+        while _t.time() < end:
+            url = driver.current_url
+            if "content" in url or "upload" not in url:
+                ok = True
+                break
+            try:
+                if driver.find_elements(
+                        By.XPATH, "//*[contains(text(),'Manage your posts') "
+                        "or contains(text(),'Your video is being uploaded') "
+                        "or contains(text(),'posted')]"):
+                    ok = True
+                    break
+            except Exception:
+                pass
+            _t.sleep(2)
+        _save_debug(driver, "studio_post_" + ("ok" if ok else "unconfirmed"))
+        if ok:
+            return (True, "")
+        return (False, "post submitted but confirmation not detected (see debug/)")
+    except UploadElementNotFound as e:
+        _save_debug(driver, "studio_element_missing")
+        return (False, f"element not found: {e}")
+    except Exception as e:
+        _save_debug(driver, "studio_error")
+        return (False, f"error: {e}")
+
+
+def upload_clip(driver, clip_path, description, schedule_time=None,
+                visibility: str = "private", log_fn=None) -> tuple[bool, str]:
     """Post a single clip with a ready (cookie-injected) driver.
-    Phase 1 supports scheduled public posts only."""
-    if visibility != "public":
-        return (False, f"visibility '{visibility}' not supported in Phase 1")
-    ok = _upload_single_video(driver, clip_path, description,
-                              schedule_time, log_fn)
-    return (ok, "" if ok else "upload failed (see debug/)")
+
+    Phase 1: immediate post via TikTok Studio. `schedule_time` is accepted
+    for forward signature stability but ignored — Phase 3's persistent
+    scheduler owns timing.
+    """
+    return _studio_post(driver, clip_path, description, visibility, log_fn)
