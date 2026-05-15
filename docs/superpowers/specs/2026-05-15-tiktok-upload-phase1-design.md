@@ -117,8 +117,28 @@ Pure functions, no Selenium import (independently unit-testable).
     `(success: bool, reason: str)`.
   - Keep the existing `_safe_caption`, quiet-hours, retry, and per-cookie
     `_add_cookies` logic already added in the recent audit.
-- `upload_clips(...)` keeps its current signature/behaviour but now sources
-  cookies/driver from the new modules and calls `upload_clip` per file.
+- `upload_clips(...)` keeps its current external signature but its **cookie
+  source is unified on the Account store**: it ignores the legacy
+  `cookie_file` path argument when a stored account exists and otherwise falls
+  back to `parse_cookies_file(cookie_file)` for back-compat. Internally it
+  iterates files and calls `upload_clip` per file. There must be exactly one
+  cookie-resolution code path (`account store -> else legacy path`), not two
+  drifting ones.
+
+### Integration with the existing bulk-upload flow
+
+- The Upload tab's "Upload to TikTok" button and `workers.uploader_worker`
+  remain, but are **rewired**: instead of passing a Netscape `cookie_file`
+  from the old StringVar, they pass the selected stored account's id. The old
+  cookie-path StringVar/input is removed from the UI (no dead duplicate
+  input); a legacy on-disk path in config is still honored by
+  `upload_clips`'s fallback only.
+- `visibility` scope for Phase 1: only `public` (with a future
+  `schedule_time`) is exercised and verified. `private`/`draft` are accepted
+  by the `upload_clip` signature but their distinct TikTok UI interactions are
+  **defined-but-not-implemented** in Phase 1 (documented stub raising a clear
+  "not yet supported in Phase 1" error if selected), so the signature is
+  forward-stable without unproven UI automation.
 
 ### UI: `src/ui/upload_tab.py`
 
