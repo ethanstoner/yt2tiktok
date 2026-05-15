@@ -874,6 +874,9 @@ def _save_debug(driver, label: str):
 > `{name,value,domain,path,expiry}` (no `secure`/`httpOnly`). That is
 > already accepted by Selenium `add_cookie`, so `_resolve_cookies` may
 > return it as-is for the legacy path.
+>
+> **DRY:** `_save_debug` supersedes the existing `_save_debug_screenshot`.
+> Do not call both — Task 9 deletes `_save_debug_screenshot`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -950,10 +953,12 @@ element = _find(driver, SELECTORS_FB["<key>"], timeout=<existing timeout>)
 ```
 
 Keep the existing date/time-picker interaction code as-is (it is
-position-based, not a single selector). Wrap the whole `try` body so that the
-existing `except TimeoutException` / `except Exception` blocks also call
-`_save_debug(driver, f"post_fail_{schedule_time.strftime('%H%M')}")` (replace
-the current `_save_debug_screenshot` call).
+position-based, not a single selector). In the existing
+`except TimeoutException` / `except Exception` blocks, replace the
+`_save_debug_screenshot(driver, ...)` call with
+`_save_debug(driver, f"post_fail_{schedule_time.strftime('%H%M')}")`, then
+**delete the now-unused `_save_debug_screenshot` function** (DRY — one
+debug-dump helper).
 
 - [ ] **Step 3: Add the `upload_clip` thin wrapper**
 
@@ -1099,8 +1104,9 @@ existing `_add_cookies(driver, cookies, log_fn)` path. Keep the parameter name
 - [ ] **Step 4: Smoke-test imports + full suite**
 
 Run: `./venv/Scripts/python.exe -c "import ast; [ast.parse(open(f,encoding='utf-8').read()) for f in ['src/ui/upload_tab.py','src/workers.py','src/uploader.py']]; print('syntax ok')"`
+Run: `./venv/Scripts/python.exe -c "import src.uploader, src.workers; print('import ok')"` (catches the new `from src.tiktok...` wiring)
 Run: `./venv/Scripts/python.exe -m pytest tests/ -q`
-Expected: `syntax ok`; all tests PASS
+Expected: `syntax ok`; `import ok`; all tests PASS
 
 - [ ] **Step 5: Commit**
 
