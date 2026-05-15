@@ -54,19 +54,26 @@ def get_account(account_id: str) -> Account | None:
 
 
 def _scrape_username(driver) -> str | None:
-    """Navigate to the profile and return the @handle, or None."""
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
+    """Resolve the logged-in account's @handle, or None.
+
+    Reads the profile link directly (no avatar click). When cookies are
+    valid, /foryou exposes anchors like
+    https://www.tiktok.com/@<handle> — we pick the first that looks like a
+    bare profile URL (no extra path segment such as /video/).
+    """
+    import re
+    import time as _t
     driver.get("https://www.tiktok.com/foryou")
-    wait = WebDriverWait(driver, 20)
-    avatar = wait.until(EC.element_to_be_clickable(
-        (By.CSS_SELECTOR, 'header [data-e2e="nav-avatar"]')))
-    avatar.click()
-    link = wait.until(EC.visibility_of_element_located(
-        (By.CSS_SELECTOR, 'a[href*="/@"]')))
-    href = link.get_attribute("href") or ""
-    return href.split("/@")[-1].split("?")[0] or None
+    deadline = _t.time() + 20
+    pat = re.compile(r"tiktok\.com/@([A-Za-z0-9._]+)/?(?:\?|$)")
+    while _t.time() < deadline:
+        for a in driver.find_elements("css selector", 'a[href*="/@"]'):
+            href = a.get_attribute("href") or ""
+            m = pat.search(href)
+            if m:
+                return m.group(1)
+        _t.sleep(0.5)
+    return None
 
 
 def verify(account: Account, headless: bool = True) -> str | None:

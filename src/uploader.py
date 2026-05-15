@@ -35,6 +35,8 @@ SELECTORS_FB = {
         (By.XPATH, "//button[contains(.,'Replace')]"),
     ],
     "caption_editor": [
+        # Verified live 2026-05-15: TikTok Studio still uses DraftEditor.
+        (By.CSS_SELECTOR, '[data-e2e="caption_container"] div.public-DraftEditor-content'),
         (By.CSS_SELECTOR, "div.public-DraftEditor-content"),
         (By.CSS_SELECTOR, '[data-e2e="caption-editor"] [contenteditable="true"]'),
         (By.CSS_SELECTOR, 'div[contenteditable="true"]'),
@@ -44,6 +46,9 @@ SELECTORS_FB = {
         (By.XPATH, "//*[contains(text(),'Schedule')]"),
     ],
     "post_button": [
+        # Verified live 2026-05-15: TikTok Studio uses data-e2e="post_video_button".
+        (By.CSS_SELECTOR, '[data-e2e="post_video_button"] button:not([disabled])'),
+        (By.CSS_SELECTOR, 'button[data-e2e="post_video_button"]:not([disabled])'),
         (By.XPATH, "//button[@data-e2e='post-button' and not(@disabled)]"),
         (By.XPATH, "//button[.//div[text()='Post'] and not(@disabled)]"),
     ],
@@ -255,7 +260,9 @@ def _upload_single_video(driver, video_path: str, description: str, schedule_tim
     try:
         if log_fn:
             log_fn("Navigating to upload page...")
-        driver.get("https://www.tiktok.com/upload")
+        # TikTok moved uploads to TikTok Studio (verified live 2026-05-15);
+        # the legacy /upload path redirects here anyway.
+        driver.get("https://www.tiktok.com/tiktokstudio/upload")
         wait = WebDriverWait(driver, 30)
         file_input = _find(driver, SELECTORS_FB["file_input"], timeout=30)
         file_input.send_keys(video_path)
