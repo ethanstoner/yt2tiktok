@@ -4,6 +4,7 @@ import calendar
 import time
 import time as _time
 from pathlib import Path
+from selenium.webdriver.common.by import By
 from src import config as cfg
 from src.tiktok.account import get_account
 from src.tiktok.cookies import to_selenium_cookies
@@ -25,6 +26,31 @@ SELECTORS = {
     "manage_posts": "//*[text()='Manage your posts']",
     "nav_avatar": 'header [data-e2e="nav-avatar"]',
     "profile_link": 'a[href*="/@"]',
+}
+
+SELECTORS_FB = {
+    "file_input": [(By.XPATH, '//input[@type="file"]')],
+    "replace_button": [
+        (By.XPATH, "//button[div[text()='Replace']]"),
+        (By.XPATH, "//button[contains(.,'Replace')]"),
+    ],
+    "caption_editor": [
+        (By.CSS_SELECTOR, "div.public-DraftEditor-content"),
+        (By.CSS_SELECTOR, '[data-e2e="caption-editor"] [contenteditable="true"]'),
+        (By.CSS_SELECTOR, 'div[contenteditable="true"]'),
+    ],
+    "schedule_radio": [
+        (By.XPATH, "//*[text()='Schedule']"),
+        (By.XPATH, "//*[contains(text(),'Schedule')]"),
+    ],
+    "post_button": [
+        (By.XPATH, "//button[@data-e2e='post-button' and not(@disabled)]"),
+        (By.XPATH, "//button[.//div[text()='Post'] and not(@disabled)]"),
+    ],
+    "manage_posts": [
+        (By.XPATH, "//*[text()='Manage your posts']"),
+        (By.XPATH, "//*[contains(text(),'Manage your posts')]"),
+    ],
 }
 
 UPLOAD_TIMEOUT = 600
@@ -231,20 +257,19 @@ def _upload_single_video(driver, video_path: str, description: str, schedule_tim
             log_fn("Navigating to upload page...")
         driver.get("https://www.tiktok.com/upload")
         wait = WebDriverWait(driver, 30)
-        file_input = wait.until(EC.presence_of_element_located((By.XPATH, SELECTORS["file_input"])))
+        file_input = _find(driver, SELECTORS_FB["file_input"], timeout=30)
         file_input.send_keys(video_path)
         if log_fn:
             log_fn("Waiting for video processing (up to 10 min)...")
-        upload_wait = WebDriverWait(driver, UPLOAD_TIMEOUT)
-        upload_wait.until(EC.element_to_be_clickable((By.XPATH, SELECTORS["replace_button"])))
-        caption_div = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, SELECTORS["caption_editor"])))
+        _find(driver, SELECTORS_FB["replace_button"], timeout=UPLOAD_TIMEOUT)
+        caption_div = _find(driver, SELECTORS_FB["caption_editor"], timeout=30)
         actions = ActionChains(driver)
         actions.move_to_element(caption_div).click()
         actions.key_down(Keys.CONTROL).send_keys("a").key_up(Keys.CONTROL)
         actions.send_keys(Keys.DELETE).perform()
         time.sleep(1)
         caption_div.send_keys(description)
-        schedule_btn = wait.until(EC.element_to_be_clickable((By.XPATH, SELECTORS["schedule_radio"])))
+        schedule_btn = _find(driver, SELECTORS_FB["schedule_radio"], timeout=30)
         schedule_btn.click()
         time.sleep(1)
         container = wait.until(EC.visibility_of_element_located((By.XPATH, SELECTORS["schedule_container"])))
@@ -291,30 +316,22 @@ def _upload_single_video(driver, video_path: str, description: str, schedule_tim
             time.sleep(0.5)
         day_xpath = (f"//div[contains(@class, '{SELECTORS['calendar_day']}') and not(contains(@class, 'outside')) and text()='{schedule_time.day}']")
         wait.until(EC.element_to_be_clickable((By.XPATH, day_xpath))).click()
-        final_btn = wait.until(EC.element_to_be_clickable((By.XPATH, SELECTORS["post_button"])))
+        final_btn = _find(driver, SELECTORS_FB["post_button"], timeout=30)
         final_btn.click()
-        wait.until(EC.visibility_of_element_located((By.XPATH, SELECTORS["manage_posts"])))
+        _find(driver, SELECTORS_FB["manage_posts"], timeout=30)
         if log_fn:
             log_fn("Upload confirmed.")
         return True
     except TimeoutException as e:
         if log_fn:
             log_fn(f"Upload timed out: {str(e).splitlines()[0]}")
-        _save_debug_screenshot(driver, f"timeout_{schedule_time.strftime('%H%M')}")
+        _save_debug(driver, f"post_fail_{schedule_time.strftime('%H%M')}")
         return False
     except Exception as e:
         if log_fn:
             log_fn(f"Upload error: {str(e).splitlines()[0]}")
-        _save_debug_screenshot(driver, f"error_{schedule_time.strftime('%H%M')}")
+        _save_debug(driver, f"post_fail_{schedule_time.strftime('%H%M')}")
         return False
-
-
-def _save_debug_screenshot(driver, name: str):
-    try:
-        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-        driver.save_screenshot(str(DEBUG_DIR / f"{name}.png"))
-    except Exception:
-        pass
 
 
 def _safe_caption(template: str, title, part, total) -> str:
@@ -449,3 +466,14 @@ def upload_clips(clips_dir: str, title: str, total_clips: int, cookie_file: str,
     if log_fn:
         log_fn(f"Done: {successful}/{total} clips scheduled.")
     return successful, total
+
+
+def upload_clip(driver, clip_path, description, schedule_time,
+                visibility: str = "public", log_fn=None) -> tuple[bool, str]:
+    """Post a single clip with a ready (cookie-injected) driver.
+    Phase 1 supports scheduled public posts only."""
+    if visibility != "public":
+        return (False, f"visibility '{visibility}' not supported in Phase 1")
+    ok = _upload_single_video(driver, clip_path, description,
+                              schedule_time, log_fn)
+    return (ok, "" if ok else "upload failed (see debug/)")
