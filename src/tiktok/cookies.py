@@ -74,3 +74,18 @@ def cookie_health(cookies: list[dict], now: datetime | None = None) -> dict:
         detail = f"Valid · expires in {days_left:.0f} days."
     return {"status": status, "expires_at": expires_at,
             "days_left": days_left, "detail": detail}
+
+
+def to_selenium_cookies(cookies: list[dict]) -> list[dict]:
+    """Map normalized cookies to Selenium add_cookie dicts (no sameSite)."""
+    out = []
+    for c in cookies:
+        sc = {
+            "name": c["name"], "value": c["value"],
+            "domain": c["domain"], "path": c["path"],
+            "secure": c["secure"], "httpOnly": c["httpOnly"],
+        }
+        if c.get("expiry") is not None:
+            sc["expiry"] = int(c["expiry"])
+        out.append(sc)
+    return out

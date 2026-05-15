@@ -93,3 +93,19 @@ class TestCookieHealth:
             [_c("sessionid", self.NOW_TS + 60 * 86400),
              _c("sid_guard", self.NOW_TS + 2 * 86400)], self.NOW)
         assert h["status"] == "expiring"
+
+
+from src.tiktok.cookies import to_selenium_cookies
+
+
+class TestToSeleniumCookies:
+    def test_maps_fields_and_keeps_expiry(self):
+        out = to_selenium_cookies([_c("sessionid", 1794412081)])
+        c = out[0]
+        assert c["name"] == "sessionid" and c["expiry"] == 1794412081
+        assert c["secure"] is True and c["httpOnly"] is True
+        assert "sameSite" not in c
+
+    def test_omits_expiry_when_none(self):
+        out = to_selenium_cookies([_c("s_v_web_id", None)])
+        assert "expiry" not in out[0]
