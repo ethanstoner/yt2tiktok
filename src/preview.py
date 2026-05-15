@@ -55,8 +55,18 @@ class CaptionPreview(ctk.CTkToplevel):
         else:
             frame_path = _grab_frame(video_path) if video_path else None
             if frame_path:
-                source_img = Image.open(frame_path)
-                os.unlink(frame_path)
+                try:
+                    # Fully load into memory before deleting; PIL keeps the
+                    # file open lazily and Windows refuses to unlink it.
+                    with Image.open(frame_path) as _im:
+                        source_img = _im.copy()
+                except Exception:
+                    source_img = None
+                finally:
+                    try:
+                        os.unlink(frame_path)
+                    except OSError:
+                        pass
 
         if source_img:
             self.base_image = self._make_9x16_background(source_img)
@@ -112,11 +122,18 @@ class CaptionPreview(ctk.CTkToplevel):
         return bg
 
     def _get_sample_text(self) -> str:
+        if not self.transcript:
+            self.transcript = [
+                {"word": "Sample", "start": 0, "end": 0.5, "confidence": 1.0},
+                {"word": "caption", "start": 0.5, "end": 1.0, "confidence": 1.0},
+                {"word": "text", "start": 1.0, "end": 1.5, "confidence": 1.0},
+            ]
         phrases = captioner.group_into_phrases(self.transcript)
         if phrases:
             phrase = phrases[0]
             return phrase, phrase[min(1, len(phrase) - 1)]
-        return [0, 1, 2], 1
+        valid = list(range(min(3, len(self.transcript))))
+        return valid, valid[min(1, len(valid) - 1)]
 
     def _render(self):
         img = self.base_image.convert("RGBA")

@@ -78,9 +78,8 @@ class ClipTab:
         ))
         help_btn.pack(side="left", padx=(SP_4, 0))
         ctk.CTkLabel(cookie_row, textvariable=state.yt_cookie, text_color=TEXT_MUTED).pack(side="left", padx=SP_4, expand=True, fill="x")
-        ctk.CTkButton(cookie_row, text="Browse", width=80, command=lambda: state.yt_cookie.set(
-            __import__('tkinter').filedialog.askopenfilename(filetypes=[("Cookie files", "*.txt")]) or ""
-        )).pack(side="right")
+        ctk.CTkButton(cookie_row, text="Browse", width=80,
+                      command=self._browse_yt_cookie).pack(side="right")
 
         # --- Divider ---
         Divider(scroll).pack(fill="x", padx=SP_12, pady=SP_12)
@@ -182,6 +181,12 @@ class ClipTab:
         )
         # Show after clipping completes
         state.clip_dir.trace_add("write", self._on_clip_dir_change)
+
+    def _browse_yt_cookie(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(filetypes=[("Cookie files", "*.txt")])
+        if path:
+            self.state.yt_cookie.set(path)
 
     def _on_clip_dir_change(self, *_):
         if self.state.clip_dir.get():
@@ -289,6 +294,10 @@ class ClipTab:
                        background_image=bg if not vp else None, video_title=vid_title)
 
     def _on_clip(self):
+        # Guard the keyboard shortcut (Ctrl+Return) which bypasses the
+        # disabled button and could start a second concurrent job.
+        if str(self.clip_btn.cget("state")) == "disabled":
+            return
         url = self.state.url.get().strip()
         local_path = self.state.local_path.get().strip()
         if url:
@@ -308,6 +317,9 @@ class ClipTab:
         self.cancel_btn.pack(side="right", padx=(SP_4, 0))
         self.preview_btn.configure(state="disabled")
         cut = self.state.cut_mode.get().lower().replace(" ", "_")
+        # Clear any stale cancel flag before the worker starts, so a cancel
+        # requested between start() and the worker body can't be lost.
+        self.workers.reset_cancel()
         threading.Thread(
             target=self.workers.clipper_worker,
             args=(

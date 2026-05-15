@@ -1,3 +1,5 @@
+import random
+
 import pytest
 from src.clipper import calculate_cut_points, sanitize_title, CLIP_MIN, CLIP_MAX
 
@@ -20,10 +22,60 @@ class TestCalculateCutPoints:
         assert abs(total - 200.0) < 1.0
 
     def test_last_clip_merged_if_short(self):
-        # A duration that would produce a very short last clip
+        # Seed RNG so this doesn't intermittently fail on an unmergeable tail.
+        random.seed(1234)
         cuts = calculate_cut_points(130.0, "random")
         for _, dur in cuts:
             assert dur >= CLIP_MIN - 1  # Allow small float imprecision
+
+
+def _synthetic_transcript(gap_after=63):
+    """~200s transcript, one word/sec, with an extra-long silence right
+    after `gap_after` (inside clip 1's 55-75s window)."""
+    tr, t = [], 0.0
+    for i in range(200):
+        d = 0.4
+        tr.append({"word": f"w{i}", "start": round(t, 3),
+                   "end": round(t + d, 3), "confidence": 1.0})
+        t = round(t + d + (1.6 if i == gap_after else 0.6), 3)
+    return tr, t
+
+
+class TestSmartCutModes:
+    def test_natural_pause_cuts_at_silence_gap(self):
+        tr, dur = _synthetic_transcript(gap_after=63)
+        cuts = calculate_cut_points(dur, "natural_pause", tr, None)
+        assert len(cuts) >= 2
+        gap_mid = (tr[63]["end"] + tr[64]["start"]) / 2
+        # First cut must land at the deliberate silence gap, not a random point.
+        assert abs(cuts[0][1] - gap_mid) < 0.01
+
+    def test_cliffhanger_invokes_llm_and_uses_its_choice(self):
+        tr, dur = _synthetic_transcript(gap_after=63)
+
+        class StubLLM:
+            def __init__(self):
+                self.calls = 0
+
+            def is_available(self):
+                return True
+
+            def complete(self, prompt):
+                self.calls += 1
+                return "index 5"
+
+        llm = StubLLM()
+        cuts = calculate_cut_points(dur, "cliffhanger", tr, llm)
+        assert llm.calls > 0, "cliffhanger never called the LLM"
+        window = [w for w in tr if w["start"] >= 55.0 and w["end"] <= min(75.0, dur)]
+        assert abs(cuts[0][1] - window[5]["end"]) < 0.01
+
+    def test_cliffhanger_without_llm_falls_back(self):
+        tr, dur = _synthetic_transcript(gap_after=63)
+        # llm=None must not crash and must still produce valid clips.
+        cuts = calculate_cut_points(dur, "cliffhanger", tr, None)
+        assert len(cuts) >= 2
+        assert abs(sum(d for _, d in cuts) - dur) < 1.0
 
 
 class TestSanitizeTitle:
@@ -35,3 +87,9 @@ class TestSanitizeTitle:
 
     def test_preserves_normal_chars(self):
         assert sanitize_title("Normal Title 123") == "Normal Title 123"
+
+    def test_empty_after_sanitize_falls_back(self):
+        # Punctuation-only titles must not collapse to an empty dir name.
+        assert sanitize_title("???") == "video"
+        assert sanitize_title("...") == "video"
+        assert sanitize_title("") == "video"

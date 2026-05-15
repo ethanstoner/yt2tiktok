@@ -29,6 +29,35 @@ class TestValidateYoutubeUrl:
     def test_url_with_params(self):
         assert validate_youtube_url("https://www.youtube.com/watch?v=abc123&t=60")[0] is True
 
+    def test_mobile_url(self):
+        assert validate_youtube_url("https://m.youtube.com/watch?v=dQw4w9WgXcQ")[0] is True
+
+    def test_music_url(self):
+        assert validate_youtube_url("https://music.youtube.com/watch?v=dQw4w9WgXcQ")[0] is True
+
+    def test_live_url(self):
+        assert validate_youtube_url("https://www.youtube.com/live/dQw4w9WgXcQ")[0] is True
+
+    def test_embed_url(self):
+        assert validate_youtube_url("https://www.youtube.com/embed/dQw4w9WgXcQ")[0] is True
+
+    def test_params_before_v(self):
+        assert validate_youtube_url("https://www.youtube.com/watch?feature=share&v=dQw4w9WgXcQ")[0] is True
+
+    def test_none_url(self):
+        assert validate_youtube_url(None)[0] is False
+
+
+class TestValidateIntervalExtra:
+    def test_inf_rejected(self):
+        assert validate_interval("inf")[0] is False
+
+    def test_nan_rejected(self):
+        assert validate_interval("nan")[0] is False
+
+    def test_huge_rejected(self):
+        assert validate_interval("1e9")[0] is False
+
 
 class TestValidateTimeFormat:
     def test_valid_time(self):

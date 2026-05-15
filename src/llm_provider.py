@@ -140,7 +140,10 @@ class LLMProvider:
             )
             if not r.ok:
                 self._handle_http_error(r)
-            return r.json()["choices"][0]["message"]["content"].strip()
+            try:
+                return r.json()["choices"][0]["message"]["content"].strip()
+            except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+                raise LLMError(f"Unexpected response from {self.provider}.")
         except ConnectionError:
             raise LLMError(f"Cannot connect to {self.provider}. Check your base URL and network.")
         except Timeout:
@@ -166,7 +169,10 @@ class LLMProvider:
             )
             if not r.ok:
                 self._handle_http_error(r)
-            return r.json()["content"][0]["text"].strip()
+            try:
+                return r.json()["content"][0]["text"].strip()
+            except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+                raise LLMError("Unexpected response from Anthropic API.")
         except ConnectionError:
             raise LLMError(f"Cannot connect to Anthropic API. Check your network.")
         except Timeout:

@@ -1,3 +1,5 @@
+import threading
+
 import customtkinter as ctk
 from src import config as cfg
 from src import uploader
@@ -6,6 +8,8 @@ from src import uploader
 class AppState:
     def __init__(self):
         self._initializing = True
+        self._save_timers: dict[str, threading.Timer] = {}
+        self._save_lock = threading.Lock()
 
         # Clip tab
         self.url = ctk.StringVar()
@@ -67,27 +71,62 @@ class AppState:
         ]
         for var, key in persist_list:
             var.trace_add("write", lambda *_, k=key, v=var: (
-                cfg.set(k, v.get()) if not self._initializing else None
+                self._debounced_save(k, v) if not self._initializing else None
             ))
+
+    def _debounced_save(self, key: str, var):
+        """Coalesce rapid writes (e.g. typing in a text field) into a single
+        config write ~0.5s after the last change, instead of one disk
+        read+write per keystroke."""
+        try:
+            value = var.get()
+        except Exception:
+            return
+        with self._save_lock:
+            existing = self._save_timers.get(key)
+            if existing is not None:
+                existing.cancel()
+            timer = threading.Timer(0.5, self._flush_save, args=(key, value))
+            timer.daemon = True
+            self._save_timers[key] = timer
+            timer.start()
+
+    def _flush_save(self, key: str, value):
+        with self._save_lock:
+            self._save_timers.pop(key, None)
+        cfg.set(key, value)
 
     def reload_from_config(self):
         """Reload all persisted vars from the current config file (after import/reset)."""
+        # Cancel any pending debounced writes so they can't clobber the
+        # freshly imported/reset values a moment later.
+        with self._save_lock:
+            for t in self._save_timers.values():
+                t.cancel()
+            self._save_timers.clear()
+
+        def _set(var, value, caster):
+            try:
+                var.set(caster(value))
+            except Exception:
+                pass  # skip malformed value, keep current
+
         self._initializing = True
         try:
-            self.mode.set(cfg.get("mode"))
-            self.cut_mode.set(cfg.get("cut_mode"))
-            self.captions_enabled.set(cfg.get("captions_enabled"))
-            self.preset.set(cfg.get("preset"))
-            self.caption_y.set(cfg.get("caption_y"))
-            self.headless.set(cfg.get("headless"))
-            self.caption_template.set(cfg.get("caption_template"))
-            self.start_time.set(cfg.get("start_time"))
-            self.interval.set(cfg.get("interval"))
-            self.llm_enabled.set(cfg.get("llm_enabled"))
-            self.llm_provider.set(cfg.get("llm_provider"))
-            self.llm_api_key.set(cfg.get("llm_api_key"))
-            self.llm_model.set(cfg.get("llm_model"))
-            self.llm_base_url.set(cfg.get("llm_base_url"))
-            self.keep_source_video.set(cfg.get("keep_source_video"))
+            _set(self.mode, cfg.get("mode"), str)
+            _set(self.cut_mode, cfg.get("cut_mode"), str)
+            _set(self.captions_enabled, cfg.get("captions_enabled"), bool)
+            _set(self.preset, cfg.get("preset"), str)
+            _set(self.caption_y, cfg.get("caption_y"), float)
+            _set(self.headless, cfg.get("headless"), bool)
+            _set(self.caption_template, cfg.get("caption_template"), str)
+            _set(self.start_time, cfg.get("start_time"), str)
+            _set(self.interval, cfg.get("interval"), str)
+            _set(self.llm_enabled, cfg.get("llm_enabled"), bool)
+            _set(self.llm_provider, cfg.get("llm_provider"), str)
+            _set(self.llm_api_key, cfg.get("llm_api_key"), str)
+            _set(self.llm_model, cfg.get("llm_model"), str)
+            _set(self.llm_base_url, cfg.get("llm_base_url"), str)
+            _set(self.keep_source_video, cfg.get("keep_source_video"), bool)
         finally:
             self._initializing = False

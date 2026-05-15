@@ -7,3 +7,9 @@ venv/
 *.cookies
 failed_clips.txt
 .yt2tiktok.json
+
+# Phase 1: never commit local TikTok account material
+accounts/
+chrome-profile/
+debug/
+*.cookies.json

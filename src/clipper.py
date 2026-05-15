@@ -33,14 +33,21 @@ FONT_PATH = _find_font()
 def sanitize_title(title: str) -> str:
     for ch in '<>:"/\\|?*':
         title = title.replace(ch, "")
-    return title.strip().rstrip(". ")
+    cleaned = title.strip().rstrip(". ")
+    return cleaned or "video"
 
 def get_video_duration(video_path: str) -> float:
     if FFPROBE_CMD is None:
         raise RuntimeError("ffprobe not found in PATH. Install FFmpeg.")
     cmd = [FFPROBE_CMD, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video_path]
     result = subprocess.run(cmd, capture_output=True, text=True)
-    return float(result.stdout.strip())
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        raise RuntimeError(
+            f"Could not read video duration (ffprobe exit {result.returncode}). "
+            f"The file may be corrupt or not a valid video: {result.stderr.strip()[:200]}"
+        )
 
 def get_video_dimensions(video_path: str) -> tuple[int, int]:
     if FFPROBE_CMD is None:
@@ -119,7 +126,16 @@ def download_video(url: str, log_fn=None, progress_fn=None, cookiefile: str = No
         log_fn(f"Downloading: {title}")
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
+    # merge_output_format only applies when a merge happens; the
+    # best[height<=1080] fallback keeps its native extension (webm/mkv).
     video_path = str(target_dir / f"{title}.mp4")
+    if not os.path.exists(video_path):
+        candidates = [
+            p for p in target_dir.glob(f"{title}.*")
+            if p.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".flv"}
+        ]
+        if candidates:
+            video_path = str(max(candidates, key=lambda p: p.stat().st_size))
     if log_fn:
         log_fn(f"Saved to: {video_path}")
     if progress_fn:
@@ -253,11 +269,22 @@ def process_clip(video_path: str, title: str, idx: int, total: int, start: float
     out = os.path.join(target_dir, f"{title}_clip_{idx}.mp4")
     os.makedirs(target_dir, exist_ok=True)
     orig_w, orig_h = dimensions if dimensions is not None else get_video_dimensions(video_path)
+    if not orig_w or not orig_h or orig_w <= 0 or orig_h <= 0:
+        orig_w, orig_h = 1920, 1080
     scaled_h = int(orig_h * (1080 / orig_w))
     pad_y = int((1920 - scaled_h) / 2)
+    # Source taller than 16:9 (vertical/square) leaves no letterbox bar;
+    # reserve a minimum band so the title/part overlays stay on-screen.
+    pad_y = max(pad_y, 140)
     top_bar_height = pad_y
     wrapped_title, title_fontsize, num_lines = wrap_text_to_fit(title, max_width_px=1080 - 80, max_height_px=top_bar_height, max_fontsize=80)
-    safe_title = wrapped_title.replace("'", "\\'")
+    # Escape chars that are special to ffmpeg's drawtext: backslash first,
+    # then % (strftime/expansion) and the single quote that wraps the text.
+    safe_title = (
+        wrapped_title.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("'", "\\'")
+    )
     bottom_fontsize = 100
     borderw = 5
     text_pad = borderw * 2 + 8
