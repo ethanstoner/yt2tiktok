@@ -112,8 +112,16 @@ def load_clip_meta(clip_dir: str) -> dict | None   # None if absent/corrupt
   today (legacy `{title} - Part {part}`) — zero regression for old clip
   folders.
 - New default `caption_template` in `config.DEFAULTS`:
-  `"{caption}\n\n{hashtags}"` (the `Part {part}` suffix is appended by the
-  builder when `total > 1`). Existing user-customized templates are
+  `"{caption}\n\n{hashtags}"`. A single helper
+  `_build_description(template, title, part, total, meta) -> str` is the ONE
+  place the post text is assembled: it renders the template via
+  `_safe_caption` and appends `" Part {part}"` only when `total > 1`.
+  **Source of truth for `total`:** the discovered `len(clip_files)` inside
+  `upload_clips` (the value the loop actually iterates), NOT the passed
+  `total_clips` argument — this avoids a mismatch when a folder's file count
+  differs from the recorded total. The UI caption preview MUST call this same
+  `_build_description` helper so the preview can never drift from what
+  `upload_clips` actually sends. Existing user-customized templates are
   respected unchanged.
 
 ### UI
@@ -192,3 +200,7 @@ must stay green.
    regression).
 5. The "Auto-generate caption" checkbox toggles generation; all existing and
    new unit tests pass.
+6. A bare local-file source (no URL, no tags) yields `url: ""`, a non-empty
+   rule caption, and empty `hashtags`; `_build_description` renders
+   `"{caption}\n\n{hashtags}"` cleanly with empty hashtags (no trailing
+   `\n\n`, no literal `{hashtags}`) — covered by a unit test.
