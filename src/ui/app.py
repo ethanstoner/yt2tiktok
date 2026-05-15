@@ -142,6 +142,12 @@ class App(ctk.CTk):
                 self.log_panel.set_progress(1.0)
                 self.log_panel.set_progress_text("Complete")
             elif msg == "":
+                try:
+                    self.log_panel.progress_bar.stop()
+                    self.log_panel.progress_bar.configure(mode="determinate")
+                    self.log_panel.set_progress(0)
+                except Exception:
+                    pass
                 self.log_panel.set_progress_text("")
             else:
                 self.log_panel.set_progress_text(msg)

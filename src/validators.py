@@ -1,5 +1,6 @@
 import re
 import os
+import math
 
 
 def validate_youtube_url(url: str) -> tuple[bool, str]:
@@ -8,10 +9,16 @@ def validate_youtube_url(url: str) -> tuple[bool, str]:
         return (False, "URL must be a non-empty string.")
     pattern = re.compile(
         r'^https?://'
-        r'(?:(?:www\.)?youtube\.com/watch\?(?:.*&)?v=[\w-]+'
-        r'|(?:www\.)?youtube\.com/shorts/[\w-]+'
-        r'|youtu\.be/[\w-]+)'
-        r'(?:[?&].*)?$'
+        r'(?:'
+        r'(?:(?:www\.|m\.|music\.)?youtube\.com|(?:www\.)?youtube-nocookie\.com)'
+        r'/(?:watch\?(?:[^\s]*&)?v=[\w-]{3,}'
+        r'|shorts/[\w-]{3,}'
+        r'|live/[\w-]{3,}'
+        r'|embed/[\w-]{3,})'
+        r'|youtu\.be/[\w-]{3,}'
+        r')'
+        r'(?:[?&#].*)?$',
+        re.IGNORECASE,
     )
     if pattern.match(url.strip()):
         return (True, "")
@@ -43,8 +50,14 @@ def validate_cookie_file(path: str) -> tuple[bool, str]:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
+                if not stripped:
                     continue
+                if stripped.startswith("#"):
+                    # "#HttpOnly_" is a real cookie line, not a comment.
+                    if stripped.startswith("#HttpOnly_"):
+                        stripped = stripped[len("#HttpOnly_"):]
+                    else:
+                        continue
                 fields = stripped.split("\t")
                 if len(fields) == 7:
                     return (True, "")
@@ -77,6 +90,10 @@ def validate_interval(val: str) -> tuple[bool, str]:
         numeric = float(val.strip())
     except ValueError:
         return (False, f"Interval '{val}' is not a valid number.")
+    if not math.isfinite(numeric):
+        return (False, f"Interval '{val}' must be a finite number.")
     if numeric <= 0:
         return (False, f"Interval '{val}' must be a positive number greater than zero.")
+    if numeric > 168:
+        return (False, f"Interval '{val}' is too large (max 168 hours / 1 week).")
     return (True, "")

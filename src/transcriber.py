@@ -16,6 +16,8 @@ class TranscriptionError(Exception):
 
 
 def _extract_audio(video_path: str, log_fn=None) -> str:
+    if FFMPEG_CMD is None:
+        raise TranscriptionError("ffmpeg not found in PATH. Install FFmpeg.")
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
     cmd = [
@@ -157,7 +159,8 @@ def _fetch_youtube_captions(url: str, log_fn=None) -> list[dict]:
     if not json3_url:
         raise TranscriptionError("No English captions available")
 
-    data = json.loads(urllib.request.urlopen(json3_url).read())
+    with urllib.request.urlopen(json3_url, timeout=30) as resp:
+        data = json.loads(resp.read())
     events = data.get("events", [])
 
     import re
