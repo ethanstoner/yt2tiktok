@@ -565,6 +565,7 @@ from pathlib import Path
 
 from src.logger import get_logger
 
+_log = get_logger(__name__)
 _PROFILE_ROOT = Path.home() / ".yt2tiktok" / "chrome-profile"
 
 
@@ -604,8 +605,8 @@ def make_driver(headless: bool, account_id: str):
     try:
         return _make_uc_driver(headless, account_id)
     except Exception as e:
-        get_logger().warning("undetected-chromedriver unavailable (%s); "
-                              "falling back to plain Selenium", e)
+        _log.warning("undetected-chromedriver unavailable (%s); "
+                     "falling back to plain Selenium", e)
         return _make_fallback_driver(headless, account_id)
 ```
 
@@ -893,7 +894,7 @@ git commit -m "feat(uploader): resilient _find selectors + unified cookie source
 
 ---
 
-## Task 9: Refactor `_post_video` to use `_find` + debug dump
+## Task 9: Refactor `_upload_single_video` to use `_find` + debug dump
 
 **Files:**
 - Modify: `src/uploader.py`
