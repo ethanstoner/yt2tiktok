@@ -2,8 +2,11 @@ import os
 import datetime
 import calendar
 import time
+import time as _time
 from pathlib import Path
 from src import config as cfg
+from src.tiktok.account import get_account
+from src.tiktok.cookies import to_selenium_cookies
 
 # ─── TikTok Selector Constants ───────────────────────────────────────────
 SELECTORS = {
@@ -39,16 +42,70 @@ COOKIE_SEARCH_DIRS = [
 ]
 
 
+class UploadElementNotFound(Exception):
+    pass
+
+
+def _find(driver, locators, timeout: int = 15):
+    """Try each (By, value) locator in order until one is present.
+    `locators` is an ordered list of fallbacks. Raises
+    UploadElementNotFound if none match within `timeout` seconds."""
+    from selenium.common.exceptions import NoSuchElementException
+    deadline = _time.time() + timeout
+    while True:
+        for by, value in locators:
+            try:
+                return driver.find_element(by, value)
+            except NoSuchElementException:
+                continue
+        if _time.time() >= deadline:
+            raise UploadElementNotFound(
+                f"None of {len(locators)} locators matched: {locators}")
+        _time.sleep(0.5)
+
+
+def _resolve_cookies(account_id, cookie_file):
+    """Single cookie-resolution path: stored account first, else legacy
+    Netscape file. Returns Selenium-ready cookie dicts (or [])."""
+    if account_id:
+        acc = get_account(account_id)
+        if acc and acc.cookies:
+            return to_selenium_cookies(acc.cookies)
+    if cookie_file:
+        legacy = parse_cookies_file(cookie_file)
+        if legacy:
+            return legacy
+    return []
+
+
+def _save_debug(driver, label: str):
+    try:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        driver.save_screenshot(str(DEBUG_DIR / f"{ts}_{label}.png"))
+        (DEBUG_DIR / f"{ts}_{label}.html").write_text(
+            driver.page_source, encoding="utf-8")
+    except Exception:
+        pass
+
+
 def parse_cookies_file(cookie_file_path: str) -> list[dict] | None:
     cookies = []
     if not os.path.exists(cookie_file_path):
         return None
     try:
-        with open(cookie_file_path, "r") as fp:
+        with open(cookie_file_path, "r", encoding="utf-8", errors="replace") as fp:
             for line in fp:
-                if line.startswith("#") or line.strip() == "":
+                line = line.strip()
+                if not line:
                     continue
-                parts = line.strip().split("\t")
+                if line.startswith("#"):
+                    # "#HttpOnly_" is a real cookie line, not a comment.
+                    if line.startswith("#HttpOnly_"):
+                        line = line[len("#HttpOnly_"):]
+                    else:
+                        continue
+                parts = line.split("\t")
                 if len(parts) == 7:
                     domain, _, path, _, expiry, name, value = parts
                     try:
@@ -59,6 +116,31 @@ def parse_cookies_file(cookie_file_path: str) -> list[dict] | None:
     except Exception:
         return None
     return cookies if cookies else None
+
+
+def _add_cookies(driver, cookies: list[dict], log_fn=None) -> int:
+    """Add cookies one by one so a single bad/expired/domain-mismatched
+    cookie can't abort the whole session. Returns count added."""
+    added = 0
+    for cookie in cookies:
+        c = dict(cookie)
+        # Selenium rejects expiry=0 (or non-positive) on many driver versions.
+        if not c.get("expiry"):
+            c.pop("expiry", None)
+        try:
+            driver.add_cookie(c)
+            added += 1
+        except Exception:
+            try:
+                # Retry without domain (lets the browser scope it to the
+                # current page) — handles leading-dot/subdomain mismatches.
+                c.pop("domain", None)
+                driver.add_cookie(c)
+                added += 1
+            except Exception:
+                if log_fn:
+                    log_fn(f"Skipped unusable cookie: {c.get('name', '?')}")
+    return added
 
 
 def find_cookie_files() -> list[str]:
@@ -108,8 +190,10 @@ def verify_cookies(cookie_file: str, headless: bool = True, log_fn=None) -> str 
             log_fn("Verifying cookies...")
         driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
         driver.get("https://www.tiktok.com/")
-        for cookie in cookies:
-            driver.add_cookie(cookie)
+        if _add_cookies(driver, cookies, log_fn) == 0:
+            if log_fn:
+                log_fn("No usable cookies could be loaded.")
+            return None
         driver.get("https://www.tiktok.com/foryou")
 
         wait = WebDriverWait(driver, 20)
@@ -233,6 +317,22 @@ def _save_debug_screenshot(driver, name: str):
         pass
 
 
+def _safe_caption(template: str, title, part, total) -> str:
+    """Format a user-supplied caption template without crashing on unknown
+    placeholders or stray braces."""
+    fields = {"title": title, "part": part, "total": total}
+
+    class _Safe(dict):
+        def __missing__(self, key):
+            return "{" + key + "}"
+
+    try:
+        return template.format_map(_Safe(fields))
+    except (ValueError, IndexError):
+        # Unbalanced/positional braces — fall back to a sane default.
+        return f"{title} - Part {part}"
+
+
 def _adjust_quiet_hours(dt: datetime.datetime) -> datetime.datetime:
     while dt.hour >= QUIET_HOURS_START or dt.hour < QUIET_HOURS_END:
         if dt.hour >= QUIET_HOURS_START:
@@ -286,8 +386,10 @@ def upload_clips(clips_dir: str, title: str, total_clips: int, cookie_file: str,
     try:
         driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
         driver.get("https://www.tiktok.com/")
-        for cookie in cookies:
-            driver.add_cookie(cookie)
+        if _add_cookies(driver, cookies, log_fn) == 0:
+            if log_fn:
+                log_fn("No usable cookies could be loaded; aborting upload.")
+            return 0, total
 
         for idx, clip_path in enumerate(clip_files):
             part_num = idx + 1
@@ -299,7 +401,7 @@ def upload_clips(clips_dir: str, title: str, total_clips: int, cookie_file: str,
                 failed_clips.extend(clip_files[idx:])
                 break
 
-            description = caption_template.format(title=title, part=part_num, total=total_clips)
+            description = _safe_caption(caption_template, title, part_num, total_clips)
             if log_fn:
                 log_fn(f"Scheduling Part {part_num} for {schedule_time.strftime('%Y-%m-%d %H:%M')}")
 
@@ -333,12 +435,16 @@ def upload_clips(clips_dir: str, title: str, total_clips: int, cookie_file: str,
             driver.quit()
 
     if failed_clips:
-        failed_path = os.path.join(clips_dir, "failed_clips.txt")
-        with open(failed_path, "w") as f:
-            for fp in failed_clips:
-                f.write(f"{fp}\n")
-        if log_fn:
-            log_fn(f"Failed clips logged to: {failed_path}")
+        try:
+            failed_path = os.path.join(clips_dir, "failed_clips.txt")
+            with open(failed_path, "w", encoding="utf-8") as f:
+                for fp in failed_clips:
+                    f.write(f"{fp}\n")
+            if log_fn:
+                log_fn(f"Failed clips logged to: {failed_path}")
+        except OSError as e:
+            if log_fn:
+                log_fn(f"Could not write failed_clips.txt: {e}")
 
     if log_fn:
         log_fn(f"Done: {successful}/{total} clips scheduled.")
