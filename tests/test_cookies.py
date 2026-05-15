@@ -52,3 +52,44 @@ class TestParseCookieJson:
     def test_non_cookie_array_raises_valueerror(self):
         with pytest.raises(ValueError):
             parse_cookie_json(json.dumps([{"foo": "bar"}]))
+
+
+from datetime import datetime, timezone
+from src.tiktok.cookies import cookie_health
+
+
+def _c(name, expiry):
+    return {"name": name, "value": "v", "domain": ".tiktok.com",
+            "path": "/", "secure": True, "httpOnly": True, "expiry": expiry}
+
+
+class TestCookieHealth:
+    NOW = datetime(2026, 5, 15, tzinfo=timezone.utc)
+    NOW_TS = int(NOW.timestamp())
+
+    def test_valid_far_future(self):
+        h = cookie_health([_c("sessionid", self.NOW_TS + 60 * 86400)], self.NOW)
+        assert h["status"] == "valid"
+        assert 59 < h["days_left"] < 61
+
+    def test_expiring_within_7_days(self):
+        h = cookie_health([_c("sessionid", self.NOW_TS + 3 * 86400)], self.NOW)
+        assert h["status"] == "expiring"
+
+    def test_expired(self):
+        h = cookie_health([_c("sessionid", self.NOW_TS - 86400)], self.NOW)
+        assert h["status"] == "expired"
+
+    def test_session_only(self):
+        h = cookie_health([_c("sessionid", None)], self.NOW)
+        assert h["status"] == "session-only"
+
+    def test_missing_auth_cookie(self):
+        h = cookie_health([_c("tiktok_webapp_theme", self.NOW_TS + 99999)], self.NOW)
+        assert h["status"] == "missing"
+
+    def test_uses_earliest_auth_expiry(self):
+        h = cookie_health(
+            [_c("sessionid", self.NOW_TS + 60 * 86400),
+             _c("sid_guard", self.NOW_TS + 2 * 86400)], self.NOW)
+        assert h["status"] == "expiring"
