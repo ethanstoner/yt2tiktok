@@ -43,7 +43,8 @@ def clipper_worker(
     llm_instance,
     state, clip_btn, preview_btn, cancel_btn,
 ):
-    reset_cancel()
+    # NOTE: the cancel flag is reset by the caller (ClipTab._on_clip)
+    # *before* this thread starts, to avoid racing a quick cancel.
     try:
         if url:
             progress("downloading")
@@ -147,10 +148,10 @@ def clipper_worker(
                     parts = msg.split("/")
                     done = int(parts[0].replace("Clip ", ""))
                     total = int(parts[1])
-                    pct = int(done / total * 100)
+                    pct = int(done / total * 100) if total else 0
                     progress_queue.put(f"progress:{done}/{total}:{pct}")
                     return
-                except (ValueError, IndexError):
+                except (ValueError, IndexError, ZeroDivisionError):
                     pass
             original_progress_fn(msg)
 
@@ -195,14 +196,24 @@ def clipper_worker(
 
     except Exception as e:
         log(f"Error: {e}")
+        # Clear the progress bar so it doesn't spin forever on failure.
+        progress("")
+        try:
+            clip_btn.winfo_toplevel().after(
+                0, lambda: state.transcription_status.set(""))
+        except Exception:
+            pass
     finally:
         def _restore_buttons():
             cancel_btn.pack_forget()
             clip_btn.configure(state="normal", text="Start Clipping")
-        clip_btn.winfo_toplevel().after(0, _restore_buttons)
+        try:
+            clip_btn.winfo_toplevel().after(0, _restore_buttons)
+        except Exception:
+            pass
 
 
-def uploader_worker(clips_dir, title, total_clips, cookie_file, caption_template, start_time, interval, headless, upload_btn):
+def uploader_worker(clips_dir, title, total_clips, account_id, caption_template, start_time, interval, headless, upload_btn):
     try:
         interval_hours = float(interval)
     except ValueError:
@@ -212,7 +223,7 @@ def uploader_worker(clips_dir, title, total_clips, cookie_file, caption_template
     try:
         successful, total = uploader.upload_clips(
             clips_dir=clips_dir, title=title, total_clips=total_clips,
-            cookie_file=cookie_file, caption_template=caption_template,
+            account_id=account_id, caption_template=caption_template,
             start_time_str=start_time, interval_hours=interval_hours,
             headless=headless, log_fn=log,
         )

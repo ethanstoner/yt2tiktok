@@ -359,15 +359,15 @@ def _adjust_quiet_hours(dt: datetime.datetime) -> datetime.datetime:
     return dt
 
 
-def upload_clips(clips_dir: str, title: str, total_clips: int, cookie_file: str, caption_template: str = "{title} - Part {part}", start_time_str: str = "10:00", interval_hours: float = 2.0, headless: bool = True, log_fn=None) -> tuple[int, int]:
+def upload_clips(clips_dir: str, title: str, total_clips: int, account_id: str = None, cookie_file: str = None, caption_template: str = "{title} - Part {part}", start_time_str: str = "10:00", interval_hours: float = 2.0, headless: bool = True, log_fn=None) -> tuple[int, int]:
     from selenium import webdriver
     from selenium.webdriver.chrome.service import Service as ChromeService
     from webdriver_manager.chrome import ChromeDriverManager
 
-    cookies = parse_cookies_file(cookie_file)
+    cookies = _resolve_cookies(account_id, cookie_file)
     if not cookies:
         if log_fn:
-            log_fn("Could not parse cookie file.")
+            log_fn("Could not load cookies (no account or cookie file).")
         return 0, 0
 
     clip_files = sorted(

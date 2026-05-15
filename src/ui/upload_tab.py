@@ -23,39 +23,23 @@ class UploadTab:
         folder_row = FilePickerRow(scroll, "Clip folder:", state.clip_dir, directory=True)
         folder_row.pack(fill="x", padx=SP_12, pady=SP_4)
 
-        # TikTok cookies
-        cookie_row = ctk.CTkFrame(scroll, fg_color="transparent")
-        cookie_row.pack(fill="x", padx=SP_12, pady=SP_4)
-        ctk.CTkLabel(cookie_row, text="TikTok cookies:").pack(side="left")
-        ctk.CTkLabel(cookie_row, textvariable=state.tk_cookie, text_color=TEXT_MUTED).pack(side="left", padx=SP_4, expand=True, fill="x")
-        ctk.CTkButton(cookie_row, text="Browse", width=80, command=lambda: state.tk_cookie.set(
-            __import__('tkinter').filedialog.askopenfilename(filetypes=[("Cookie files", "*.txt")]) or ""
-        )).pack(side="right")
-        ctk.CTkButton(cookie_row, text="Verify", width=60, command=lambda: threading.Thread(
-            target=self.workers.verify_worker,
-            args=(state.tk_cookie.get(), state.headless.get(), state.tk_status, self.status_label),
-            daemon=True,
-        ).start()).pack(side="right", padx=SP_4)
-
-        # Status
-        self.status_label = ctk.CTkLabel(scroll, textvariable=state.tk_status, text_color=TEXT_MUTED)
-        self.status_label.pack(padx=SP_12, anchor="w")
-
-        def _update_status_color(*_):
-            text = state.tk_status.get().lower()
-            if "logged in" in text:
-                self.status_label.configure(text_color=SUCCESS)
-            elif "failed" in text or "error" in text:
-                self.status_label.configure(text_color=ERROR)
-            else:
-                self.status_label.configure(text_color=TEXT_MUTED)
-        state.tk_status.trace_add("write", _update_status_color)
-
-        def on_cookie_selected(*_):
-            path = state.tk_cookie.get()
-            if path:
-                uploader.save_last_cookie_path(path)
-        state.tk_cookie.trace_add("write", on_cookie_selected)
+        # --- Account card ---
+        acct_card = ctk.CTkFrame(scroll, fg_color=BG_CARD, corner_radius=RADIUS_CARD)
+        acct_card.pack(fill="x", padx=SP_12, pady=SP_4)
+        self.acct_user = ctk.CTkLabel(acct_card, text="No account loaded",
+                                      font=("", FONT_LABEL, "bold"))
+        self.acct_user.pack(anchor="w", padx=SP_12, pady=(SP_8, 0))
+        self.acct_health = ctk.CTkLabel(acct_card, text="", text_color=TEXT_MUTED)
+        self.acct_health.pack(anchor="w", padx=SP_12, pady=(0, SP_4))
+        btnrow = ctk.CTkFrame(acct_card, fg_color="transparent")
+        btnrow.pack(fill="x", padx=SP_12, pady=(0, SP_8))
+        ctk.CTkButton(btnrow, text="Paste cookies JSON", width=150,
+                      command=self._paste_cookies).pack(side="left", padx=(0, SP_4))
+        ctk.CTkButton(btnrow, text="Load .json", width=90,
+                      command=self._load_cookies_file).pack(side="left", padx=SP_4)
+        ctk.CTkButton(btnrow, text="Re-verify", width=90,
+                      command=self._reverify).pack(side="left", padx=SP_4)
+        self._render_account_card()
 
         # Caption template
         Divider(scroll).pack(fill="x", padx=SP_12, pady=SP_12)
@@ -112,9 +96,71 @@ class UploadTab:
         )
         self.upload_btn.pack(fill="x", padx=SP_12, pady=(SP_12, SP_12))
 
+    def _render_account_card(self):
+        from src.tiktok.account import get_account
+        a = get_account("main")
+        if not a:
+            self.acct_user.configure(text="No account loaded")
+            self.acct_health.configure(text="Paste or load your TikTok cookies.",
+                                       text_color=TEXT_MUTED)
+            return
+        self.acct_user.configure(
+            text=f"@{a.username}" if a.username else "Loaded (not verified)")
+        h = a.health()
+        color = {"valid": SUCCESS, "expiring": WARNING, "expired": ERROR,
+                 "session-only": TEXT_MUTED, "missing": ERROR}.get(
+                     h["status"], TEXT_MUTED)
+        self.acct_health.configure(text=h["detail"], text_color=color)
+
+    def _store_cookies(self, source: str):
+        from src.tiktok.cookies import parse_cookie_json
+        from src.tiktok.account import Account, save_account
+        from tkinter import messagebox
+        try:
+            cookies = parse_cookie_json(source)
+        except ValueError as e:
+            messagebox.showerror("Invalid cookies", str(e))
+            return
+        save_account(Account(id="main", label="Main", cookies=cookies))
+        self._render_account_card()
+        self._reverify()
+
+    def _paste_cookies(self):
+        dlg = ctk.CTkToplevel(self.acct_user.winfo_toplevel())
+        dlg.title("Paste cookies JSON")
+        dlg.geometry("520x360")
+        box = ctk.CTkTextbox(dlg)
+        box.pack(fill="both", expand=True, padx=SP_12, pady=SP_12)
+        def _load():
+            txt = box.get("1.0", "end").strip()
+            dlg.destroy()
+            if txt:
+                self._store_cookies(txt)
+        ctk.CTkButton(dlg, text="Load", command=_load).pack(pady=(0, SP_12))
+
+    def _load_cookies_file(self):
+        from tkinter import filedialog
+        p = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
+        if p:
+            self._store_cookies(p)
+
+    def _reverify(self):
+        import threading
+        from src.tiktok.account import get_account, verify
+        a = get_account("main")
+        if not a:
+            return
+        self.acct_health.configure(text="Verifying…", text_color=TEXT_MUTED)
+        def _run():
+            verify(a, headless=self.state.headless.get())
+            self.acct_user.winfo_toplevel().after(0, self._render_account_card)
+        threading.Thread(target=_run, daemon=True).start()
+
     def _on_upload(self):
-        if not self.state.tk_cookie.get():
-            messagebox.showerror("Error", "Select a TikTok cookie file first.")
+        from src.tiktok.account import get_account
+        a = get_account("main")
+        if a is None or a.health()["status"] in {"expired", "missing"}:
+            messagebox.showerror("No TikTok account", "Load and verify your TikTok cookies first.")
             return
         if not self.state.clip_dir.get() or not os.path.isdir(self.state.clip_dir.get()):
             messagebox.showerror("Error", "Select a valid clip folder.")
@@ -133,7 +179,7 @@ class UploadTab:
         threading.Thread(
             target=self.workers.uploader_worker,
             args=(self.state.clip_dir.get(), self.state.title.get(), clip_count,
-                  self.state.tk_cookie.get(), self.state.caption_template.get(),
+                  "main", self.state.caption_template.get(),
                   self.state.start_time.get(), self.state.interval.get(),
                   self.state.headless.get(), self.upload_btn),
             daemon=True,
