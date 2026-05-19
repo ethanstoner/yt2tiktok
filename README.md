@@ -27,7 +27,7 @@ Built with CustomTkinter for a modern dark-themed interface.
 
 ## Roadmap
 
-These features are implemented in code but **not yet tested or verified**:
+Implemented and being hardened (polish and edge-case verification in progress):
 
 - [ ] **CustomTkinter GUI** -- Desktop interface for the full pipeline (main.py)
 - [ ] **Caption Preview Window** -- Interactive drag-to-reposition preview
@@ -186,6 +186,10 @@ yt2tiktok/
 **Transcription OOM** -- If `large-v3-turbo` crashes, the app automatically falls back to `medium` then `base`. Each model attempt runs in an isolated subprocess so OOM can't crash the app.
 
 **LLM request timeout** -- The LLM client has a 30-second timeout. If your provider is slow or offline, keyword detection falls back to heuristic and Cliffhanger mode is disabled.
+
+## Usage Note
+
+Intended for personal and educational use. Only process videos you own or have the rights to repurpose, and follow the terms of service of any platform you upload to.
 
 ## License
 
