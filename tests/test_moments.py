@@ -241,3 +241,54 @@ class TestSnapMoment:
         # Pre-roll would give 0.1 - 0.3 = -0.2 → clamped to 0.0.
         start, _ = snap_moment(0.0, 1.0, tr)
         assert start == 0.0
+
+
+import json as jsonlib
+
+from src.moments import find_best_moments, write_deliverables
+
+
+class TestFindBestMoments:
+    def test_end_to_end_with_fake_llm(self):
+        tr = make_transcript(300)
+        llm = FakeLLM([
+            # candidate pass (single window)
+            '[{"start_idx": 20, "end_idx": 55, "score": 85, "hook_title": "Hook A", "reason": "ra"},'
+            ' {"start_idx": 150, "end_idx": 190, "score": 70, "hook_title": "Hook B", "reason": "rb"}]',
+            # ranking pass
+            '{"top": [0, 1]}',
+            # caption pass
+            '[{"index": 0, "caption": "capA #a"}, {"index": 1, "caption": "capB #b"}]',
+        ])
+        moments = find_best_moments(tr, llm, count=2, min_dur=20.0, max_dur=90.0)
+        assert len(moments) == 2
+        assert moments[0].hook_title == "Hook A"
+        assert moments[0].caption == "capA #a"
+        for m in moments:
+            assert m.end > m.start >= 0.0
+
+    def test_zero_candidates_raises(self):
+        tr = make_transcript(300)
+        llm = FakeLLM(["[]"])
+        with pytest.raises(MomentsError):
+            find_best_moments(tr, llm, count=5, min_dur=20.0, max_dur=90.0)
+
+
+class TestWriteDeliverables:
+    def test_writes_json_and_report(self, tmp_path):
+        moments = [
+            Moment(start=10.0, end=45.0, score=85, hook_title="Hook A",
+                   reason="strong open", caption="capA #a"),
+            Moment(start=100.0, end=130.0, score=70, hook_title="Hook B",
+                   reason="funny", caption="capB #b"),
+        ]
+        write_deliverables(moments, "MyVideo", str(tmp_path))
+        data = jsonlib.loads((tmp_path / "moments.json").read_text(encoding="utf-8"))
+        assert len(data) == 2
+        assert data[0]["file"] == "MyVideo_clip_1.mp4"
+        assert data[0]["score"] == 85
+        assert data[0]["duration"] == 35.0
+        report = (tmp_path / "report.md").read_text(encoding="utf-8")
+        assert "Hook A" in report
+        assert "capB #b" in report
+        assert "85" in report

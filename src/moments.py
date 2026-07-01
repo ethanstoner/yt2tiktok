@@ -249,3 +249,75 @@ def snap_moment(start: float, end: float, transcript: list[dict]) -> tuple[float
     if first is not None and first["start"] < end:
         start = max(0.0, first["start"] - PRE_ROLL)
     return start, end
+
+
+def find_best_moments(
+    transcript: list[dict],
+    llm,
+    count: int = 5,
+    min_dur: float = 20.0,
+    max_dur: float = 90.0,
+    log_fn=None,
+) -> list[Moment]:
+    """Two-pass LLM moment selection. Returns winners in rank order
+    (best first), boundaries snapped. Raises MomentsError if nothing
+    viable is found."""
+    windows = chunk_transcript(transcript)
+    if log_fn:
+        log_fn(f"Scanning {len(windows)} transcript window(s) for viral moments...")
+    candidates: list[Moment] = []
+    for wi, window in enumerate(windows, 1):
+        found = _candidates_for_window(window, llm, min_dur, max_dur, log_fn)
+        if log_fn:
+            log_fn(f"Window {wi}/{len(windows)}: {len(found)} candidate(s)")
+        candidates.extend(found)
+    if not candidates:
+        raise MomentsError(
+            "The LLM found no viable moments. Try widening the duration "
+            "range or check that the video has spoken content.")
+    candidates = dedupe_candidates(candidates)
+    if log_fn:
+        log_fn(f"{len(candidates)} candidates after dedup; ranking...")
+    winners = _rank_and_caption(candidates, llm, count, log_fn)
+    for m in winners:
+        m.start, m.end = snap_moment(m.start, m.end, transcript)
+    return winners
+
+
+def write_deliverables(moments: list[Moment], title: str, target_dir: str):
+    """Write moments.json (machine-readable) and report.md (client-facing)
+    next to the clips. Clip filenames follow clipper's convention."""
+    import os
+    entries = []
+    for i, m in enumerate(moments, 1):
+        entries.append({
+            "file": f"{title}_clip_{i}.mp4",
+            "start": round(m.start, 2),
+            "end": round(m.end, 2),
+            "duration": round(m.end - m.start, 2),
+            "score": m.score,
+            "hook_title": m.hook_title,
+            "reason": m.reason,
+            "caption": m.caption,
+        })
+    with open(os.path.join(target_dir, "moments.json"), "w", encoding="utf-8") as f:
+        json.dump(entries, f, indent=2)
+
+    lines = [f"# Best Moments Report — {title}", ""]
+    for i, e in enumerate(entries, 1):
+        mm_s, ss_s = divmod(int(e["start"]), 60)
+        lines += [
+            f"## Clip {i}: {e['hook_title']}",
+            "",
+            f"- **File:** `{e['file']}`",
+            f"- **Source timestamp:** {mm_s}:{ss_s:02d} ({e['duration']:.0f}s)",
+            f"- **Virality score:** {e['score']}/100",
+            f"- **Why this clip:** {e['reason']}",
+            "",
+            "**Ready-to-paste caption:**",
+            "",
+            f"> {e['caption']}" if e["caption"] else "> (caption generation unavailable)",
+            "",
+        ]
+    with open(os.path.join(target_dir, "report.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
