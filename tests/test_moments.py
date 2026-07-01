@@ -396,3 +396,45 @@ class TestComputeBestMomentsCuts:
         tr = make_transcript(300)
         with pytest.raises(Exception):
             compute_best_moments_cuts(tr, None, 2, 20.0, 90.0, None)
+
+
+class TestCancellation:
+    def test_cancel_between_windows_stops_llm_calls(self):
+        # 25-minute transcript → 3 candidate-pass windows if uncancelled.
+        tr = make_transcript(1500)
+        llm = FakeLLM([
+            '[{"start_idx": 20, "end_idx": 55, "score": 85, '
+            '"hook_title": "Hook A", "reason": "ra"}]',
+        ])
+        # Allow the first window's LLM call, then request cancellation.
+        cancel_check = lambda: len(llm.prompts) >= 1
+        with pytest.raises(MomentsError, match="Cancelled"):
+            find_best_moments(tr, llm, count=2, min_dur=20.0, max_dur=90.0,
+                              cancel_check=cancel_check)
+        # Only window 1 was scanned — windows 2 and 3 (and the ranking/
+        # caption passes) never hit the LLM.
+        assert len(llm.prompts) == 1
+
+    def test_cancel_before_ranking(self):
+        tr = make_transcript(300)  # single window
+        llm = FakeLLM([
+            '[{"start_idx": 20, "end_idx": 55, "score": 85, '
+            '"hook_title": "Hook A", "reason": "ra"}]',
+        ])
+        # False for the pre-window check, True for the pre-ranking check.
+        calls = []
+        def cancel_check():
+            calls.append(True)
+            return len(calls) > 1
+        with pytest.raises(MomentsError, match="Cancelled"):
+            find_best_moments(tr, llm, count=1, min_dur=20.0, max_dur=90.0,
+                              cancel_check=cancel_check)
+        assert len(llm.prompts) == 1  # candidate pass only, no ranking call
+
+    def test_compute_best_moments_cuts_forwards_cancel_check(self):
+        tr = make_transcript(300)
+        llm = FakeLLM([])
+        with pytest.raises(MomentsError, match="Cancelled"):
+            compute_best_moments_cuts(tr, llm, 2, 20.0, 90.0, None,
+                                      cancel_check=lambda: True)
+        assert llm.prompts == []

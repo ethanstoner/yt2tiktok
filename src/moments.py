@@ -277,19 +277,30 @@ def find_best_moments(
     min_dur: float = 20.0,
     max_dur: float = 90.0,
     log_fn=None,
+    cancel_check=None,
 ) -> list[Moment]:
     """Two-pass LLM moment selection. Returns winners in rank order
     (best first), boundaries snapped. Raises MomentsError if nothing
-    viable is found."""
+    viable is found.
+
+    cancel_check: optional zero-arg callable returning True to abort;
+    checked between LLM calls (each can take up to 90s). Raises
+    MomentsError("Cancelled by user.") when it fires."""
+    def _check_cancel():
+        if cancel_check is not None and cancel_check():
+            raise MomentsError("Cancelled by user.")
+
     windows = chunk_transcript(transcript)
     if log_fn:
         log_fn(f"Scanning {len(windows)} transcript window(s) for viral moments...")
     candidates: list[Moment] = []
     for wi, window in enumerate(windows, 1):
+        _check_cancel()
         found = _candidates_for_window(window, llm, min_dur, max_dur, log_fn)
         if log_fn:
             log_fn(f"Window {wi}/{len(windows)}: {len(found)} candidate(s)")
         candidates.extend(found)
+    _check_cancel()
     if not candidates:
         raise MomentsError(
             "The LLM found no viable moments. Try widening the duration "

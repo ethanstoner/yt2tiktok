@@ -38,7 +38,8 @@ def reset_cancel():
     _cancel_event.clear()
 
 
-def compute_best_moments_cuts(transcript, llm, count, min_dur, max_dur, log_fn):
+def compute_best_moments_cuts(transcript, llm, count, min_dur, max_dur, log_fn,
+                              cancel_check=None):
     """Run best-moments selection and convert Moment objects to the
     (start, duration) tuples split_video expects, plus the per-clip
     hook-title overlay map. Raises MomentsError / ValueError upward."""
@@ -50,7 +51,7 @@ def compute_best_moments_cuts(transcript, llm, count, min_dur, max_dur, log_fn):
             "Best Moments mode requires a transcript.")
     found = moments_mod.find_best_moments(
         transcript, llm, count=count, min_dur=float(min_dur),
-        max_dur=float(max_dur), log_fn=log_fn)
+        max_dur=float(max_dur), log_fn=log_fn, cancel_check=cancel_check)
     cuts = [(m.start, m.end - m.start) for m in found]
     overlay_map = {i: m.hook_title for i, m in enumerate(found, 1)}
     return cuts, overlay_map, found
@@ -145,7 +146,8 @@ def clipper_worker(
             try:
                 cuts, overlay_map, best_moments = compute_best_moments_cuts(
                     transcript, llm, moments_count,
-                    moments_min_dur, moments_max_dur, log)
+                    moments_min_dur, moments_max_dur, log,
+                    cancel_check=is_cancelled)
             except moments_mod.MomentsError as e:
                 log(f"Best Moments failed: {e}")
                 progress("")
