@@ -265,7 +265,50 @@ def calculate_cut_points(
     return clips
 
 
-def process_clip(video_path: str, title: str, idx: int, total: int, start: float, duration: float, target_dir: str, mode: str = "blurred", caption_ass: str = None, log_fn=None, dimensions: tuple[int, int] = None) -> str | None:
+def build_overlay_filters(title: str, idx: int, top_text: str | None, show_part_label: bool,
+                          top_bar_height: int = 140, pad_y: int = 140) -> str:
+    """Build the drawtext filter string for the top text (hook title or
+    video title) and optional bottom Part label. Empty string if no font.
+
+    top_bar_height/pad_y come from process_clip's dimension-aware
+    computation; the 140 defaults match its minimum reserved band."""
+    if not FONT_PATH:
+        return ""
+    display_top = top_text if top_text else title
+    wrapped_title, title_fontsize, num_lines = wrap_text_to_fit(
+        display_top, max_width_px=1080 - 80, max_height_px=top_bar_height, max_fontsize=80)
+    safe_title = (
+        wrapped_title.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("'", "\\'")
+    )
+    borderw = 5
+    text_pad = borderw * 2 + 8
+    safe_font = FONT_PATH.replace("\\", "/").replace(":", "\\:")
+    font = ImageFont.truetype(FONT_PATH, title_fontsize)
+    base_h = font.getbbox("A")[3] - font.getbbox("A")[1]
+    line_spacing = int(base_h * 0.25)
+    title_block_h = num_lines * base_h + (num_lines - 1) * line_spacing
+    top_text_y = (top_bar_height - title_block_h) // 2 + text_pad
+    filters = (
+        f"drawtext=fontfile='{safe_font}':text='{safe_title}':fontcolor=white:"
+        f"fontsize={title_fontsize}:x=(w-text_w)/2:y={top_text_y}:"
+        f"borderw={borderw}:bordercolor=black:line_spacing=12:text_align=center"
+    )
+    if show_part_label:
+        bottom_fontsize = 100
+        font_bottom = ImageFont.truetype(FONT_PATH, bottom_fontsize)
+        bottom_h = font_bottom.getbbox("A")[3] - font_bottom.getbbox("A")[1]
+        bottom_text_y = (1920 - pad_y) + (pad_y - bottom_h) // 2 + text_pad
+        filters += (
+            f",drawtext=fontfile='{safe_font}':text='Part {idx}':fontcolor=white:"
+            f"fontsize={bottom_fontsize}:x=(w-text_w)/2:y={bottom_text_y}:"
+            f"borderw={borderw}:bordercolor=black"
+        )
+    return filters
+
+
+def process_clip(video_path: str, title: str, idx: int, total: int, start: float, duration: float, target_dir: str, mode: str = "blurred", caption_ass: str = None, log_fn=None, dimensions: tuple[int, int] = None, top_text: str | None = None, show_part_label: bool = True) -> str | None:
     out = os.path.join(target_dir, f"{title}_clip_{idx}.mp4")
     os.makedirs(target_dir, exist_ok=True)
     orig_w, orig_h = dimensions if dimensions is not None else get_video_dimensions(video_path)
@@ -277,47 +320,11 @@ def process_clip(video_path: str, title: str, idx: int, total: int, start: float
     # reserve a minimum band so the title/part overlays stay on-screen.
     pad_y = max(pad_y, 140)
     top_bar_height = pad_y
-    wrapped_title, title_fontsize, num_lines = wrap_text_to_fit(title, max_width_px=1080 - 80, max_height_px=top_bar_height, max_fontsize=80)
-    # Escape chars that are special to ffmpeg's drawtext: backslash first,
-    # then % (strftime/expansion) and the single quote that wraps the text.
-    safe_title = (
-        wrapped_title.replace("\\", "\\\\")
-        .replace("%", "\\%")
-        .replace("'", "\\'")
-    )
-    bottom_fontsize = 100
-    borderw = 5
-    text_pad = borderw * 2 + 8
-    if FONT_PATH:
-        safe_font = FONT_PATH.replace("\\", "/").replace(":", "\\:")
-        font = ImageFont.truetype(FONT_PATH, title_fontsize)
-        base_h = font.getbbox("A")[3] - font.getbbox("A")[1]
-        line_spacing = int(base_h * 0.25)
-        title_block_h = num_lines * base_h + (num_lines - 1) * line_spacing
-        top_text_y = (top_bar_height - title_block_h) // 2 + text_pad
-        font_bottom = ImageFont.truetype(FONT_PATH, bottom_fontsize)
-        bottom_h = font_bottom.getbbox("A")[3] - font_bottom.getbbox("A")[1]
-        bottom_text_y = (1920 - pad_y) + (pad_y - bottom_h) // 2 + text_pad
-    else:
-        safe_font = ""
-        top_text_y = pad_y // 4
-        bottom_text_y = 1920 - pad_y + pad_y // 4
+    text_filters = build_overlay_filters(title, idx, top_text, show_part_label, top_bar_height=top_bar_height, pad_y=pad_y)
     safe_ass = ""
     fonts_dir = str(Path(__file__).parent.parent / "fonts").replace("\\", "/").replace(":", "\\:")
     if caption_ass:
         safe_ass = caption_ass.replace("\\", "/").replace(":", "\\:")
-    part_label = f"Part {idx}"
-    if FONT_PATH:
-        text_filters = (
-            f"drawtext=fontfile='{safe_font}':text='{safe_title}':fontcolor=white:"
-            f"fontsize={title_fontsize}:x=(w-text_w)/2:y={top_text_y}:"
-            f"borderw={borderw}:bordercolor=black:line_spacing=12:text_align=center,"
-            f"drawtext=fontfile='{safe_font}':text='{part_label}':fontcolor=white:"
-            f"fontsize={bottom_fontsize}:x=(w-text_w)/2:y={bottom_text_y}:"
-            f"borderw={borderw}:bordercolor=black"
-        )
-    else:
-        text_filters = ""
     ass_suffix = f",ass='{safe_ass}':fontsdir='{fonts_dir}'" if caption_ass else ""
     text_and_ass = (f",{text_filters}" if text_filters else "") + ass_suffix
     if mode == "blurred":
@@ -368,6 +375,8 @@ def split_video(
     cuts: list[tuple[float, float]] = None,
     log_fn=None,
     progress_fn=None,
+    overlay_map: dict = None,
+    show_part_label: bool = True,
 ) -> tuple[str, int]:
     import concurrent.futures
     import threading as _threading
@@ -404,6 +413,8 @@ def split_video(
             video_path, title, i, total, clip_start, clip_dur,
             target_dir, mode=mode, caption_ass=ass_path, log_fn=log_fn,
             dimensions=video_dimensions,
+            top_text=overlay_map.get(i) if overlay_map else None,
+            show_part_label=show_part_label,
         )
         with lock:
             completed[0] += 1

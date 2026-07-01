@@ -93,3 +93,26 @@ class TestSanitizeTitle:
         assert sanitize_title("???") == "video"
         assert sanitize_title("...") == "video"
         assert sanitize_title("") == "video"
+
+
+from src.clipper import build_overlay_filters, FONT_PATH
+
+
+class TestBuildOverlayFilters:
+    @pytest.mark.skipif(not FONT_PATH, reason="no caption font available")
+    def test_default_has_title_and_part(self):
+        f = build_overlay_filters("My Title", 1, top_text=None, show_part_label=True)
+        assert "My Title" in f
+        assert "Part 1" in f
+
+    @pytest.mark.skipif(not FONT_PATH, reason="no caption font available")
+    def test_custom_top_text_replaces_title(self):
+        f = build_overlay_filters("My Title", 1, top_text="INSANE story", show_part_label=False)
+        assert "INSANE story" in f
+        assert "My Title" not in f
+        assert "Part" not in f
+
+    def test_no_font_returns_empty(self, monkeypatch):
+        import src.clipper as clipper_mod
+        monkeypatch.setattr(clipper_mod, "FONT_PATH", "")
+        assert build_overlay_filters("T", 1, None, True) == ""
