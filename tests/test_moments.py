@@ -292,3 +292,75 @@ class TestWriteDeliverables:
         assert "Hook A" in report
         assert "capB #b" in report
         assert "85" in report
+
+    def test_hour_timestamp_formatting(self, tmp_path):
+        moments = [Moment(start=4530.0, end=4560.0, score=50, hook_title="H",
+                          reason="r", caption="c")]
+        write_deliverables(moments, "Vid", str(tmp_path))
+        report = (tmp_path / "report.md").read_text(encoding="utf-8")
+        assert "1:15:30" in report
+
+    def test_unicode_round_trip(self, tmp_path):
+        moments = [Moment(start=5.0, end=30.0, score=77,
+                          hook_title="🔥 これはヤバい moment",
+                          reason="なぜなら面白い", caption="🚀 見て！ #viral")]
+        write_deliverables(moments, "Vid", str(tmp_path))
+        data = jsonlib.loads((tmp_path / "moments.json").read_text(encoding="utf-8"))
+        assert data[0]["hook_title"] == "🔥 これはヤバい moment"
+        assert data[0]["caption"] == "🚀 見て！ #viral"
+        report = (tmp_path / "report.md").read_text(encoding="utf-8")
+        assert "🔥 これはヤバい moment" in report
+        assert "🚀 見て！ #viral" in report
+
+
+class TestRankingHardening:
+    def test_partial_ranking_padded_with_score_order(self):
+        # Only one valid index (2 → C); the other slot must be padded with
+        # the highest-scored remaining candidate (B, 90) — still 2 clips.
+        llm = FakeLLM(['{"top": [99, 2]}',
+                       '[{"index": 0, "caption": "c1"}, {"index": 1, "caption": "c2"}]'])
+        winners = _rank_and_caption(_three_candidates(), llm, count=2)
+        assert [m.hook_title for m in winners] == ["C", "B"]
+
+    def test_float_indices_coerced(self):
+        llm = FakeLLM(['{"top": [1.0, 0.0]}',
+                       '[{"index": 0, "caption": "c1"}, {"index": 1, "caption": "c2"}]'])
+        winners = _rank_and_caption(_three_candidates(), llm, count=2)
+        assert [m.hook_title for m in winners] == ["B", "A"]
+
+    def test_caption_prompt_includes_transcript_excerpt(self):
+        tr = make_transcript(300)
+        llm = FakeLLM(['{"top": [0]}', '[{"index": 0, "caption": "c"}]'])
+        cands = [Moment(start=10.0, end=40.0, score=80, hook_title="H", reason="r")]
+        _rank_and_caption(cands, llm, count=1, transcript=tr)
+        assert "w10" in llm.prompts[1]
+
+
+class TestChunkOverlapValidation:
+    def test_overlap_ge_window_raises(self):
+        with pytest.raises(MomentsError):
+            chunk_transcript(make_transcript(300), window_seconds=60, overlap_seconds=60)
+
+
+class TestSnapRevert:
+    def test_snap_that_violates_min_dur_is_reverted(self):
+        # Contiguous 1s words, except a 1.8s silence between word 10
+        # (ends 11.0) and word 11 (starts 12.8); gap midpoint = 11.9.
+        tr = []
+        t = 0.0
+        for i in range(60):
+            tr.append({"word": f"w{i}", "start": round(t, 3),
+                       "end": round(t + 1.0, 3), "confidence": 1.0})
+            t += 1.0 if i != 10 else 2.8
+        llm = FakeLLM([
+            '[{"start_idx": 10, "end_idx": 28, "score": 80, "hook_title": "H", "reason": "r"}]',
+            '{"top": [0]}',
+            '[{"index": 0, "caption": "c"}]',
+        ])
+        # Candidate: start 10.0, end 30.8 → 20.8s (just above min_dur 20).
+        # Snapping would move start to gap mid 11.9 then pre-roll to 12.5,
+        # shrinking duration to 18.3s < min_dur → boundaries must revert.
+        moments = find_best_moments(tr, llm, count=1, min_dur=20.0, max_dur=90.0)
+        m = moments[0]
+        assert m.start == 10.0
+        assert abs(m.end - 30.8) < 0.01

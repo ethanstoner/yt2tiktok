@@ -39,6 +39,8 @@ def chunk_transcript(
     """Split a word-level transcript into overlapping time windows."""
     if not transcript:
         raise MomentsError("Transcript is empty.")
+    if overlap_seconds >= window_seconds:
+        raise MomentsError("overlap_seconds must be smaller than window_seconds.")
     total_end = transcript[-1]["end"]
     if total_end <= window_seconds:
         return [transcript]
@@ -109,6 +111,8 @@ def _candidates_for_window(
         min_dur=min_dur, max_dur=max_dur,
         words=_format_window(window),
     )
+    if log_fn:
+        log_fn(f"Window prompt ~{len(prompt) // 4} tokens")
     raw = _llm_json(llm, prompt, list, log_fn)
     if raw is None:
         return []
@@ -117,7 +121,7 @@ def _candidates_for_window(
     for c in raw:
         try:
             si, ei = int(c["start_idx"]), int(c["end_idx"])
-            score = int(c["score"])
+            score = max(0, min(100, int(c["score"])))
             hook, reason = str(c["hook_title"]), str(c["reason"])
         except (KeyError, TypeError, ValueError):
             if log_fn:
@@ -163,7 +167,7 @@ Candidates:
 Rank by: hook strength in the first 3 seconds, emotional payoff, and whether the moment is fully self-contained (no missing context). Return ONLY JSON, best first:
 {{"top": [candidate indices]}}"""
 
-_CAPTION_PROMPT = """Write a TikTok/YouTube Shorts post caption for each clip below: 1-2 punchy sentences that create curiosity, then 3-5 relevant hashtags.
+_CAPTION_PROMPT = """Write a TikTok/YouTube Shorts post caption for each clip below: 1-2 punchy sentences that create curiosity, then 3-5 relevant hashtags. Some clips include a transcript excerpt — use it to make the caption specific.
 
 Clips:
 {clips}
@@ -184,7 +188,8 @@ def _llm_json(llm, prompt: str, kind: type, log_fn=None):
     return None
 
 
-def _rank_and_caption(candidates: list[Moment], llm, count: int, log_fn=None) -> list[Moment]:
+def _rank_and_caption(candidates: list[Moment], llm, count: int, log_fn=None,
+                      transcript: list[dict] | None = None) -> list[Moment]:
     """Pick the top `count` candidates via one ranking call, then generate
     captions for only the winners. Falls back to score order if ranking
     fails; captions stay empty if caption generation fails."""
@@ -197,17 +202,31 @@ def _rank_and_caption(candidates: list[Moment], llm, count: int, log_fn=None) ->
     order: list[int] = []
     if parsed and isinstance(parsed.get("top"), list):
         for i in parsed["top"]:
-            if isinstance(i, int) and 0 <= i < len(candidates) and i not in order:
-                order.append(i)
-    if not order:
-        if log_fn:
-            log_fn("Ranking pass failed; falling back to score order.")
-        order = sorted(range(len(candidates)), key=lambda i: -candidates[i].score)
+            # Accept int or float indices (llama models emit 2.0), never bool.
+            if isinstance(i, bool) or not isinstance(i, (int, float)):
+                continue
+            idx = int(i)
+            if 0 <= idx < len(candidates) and idx not in order:
+                order.append(idx)
+    if not order and log_fn:
+        log_fn("Ranking pass failed; falling back to score order.")
+    # Pad partial/invalid rankings with the remaining candidates in
+    # score-descending order so we never under-deliver clips.
+    remaining = sorted((i for i in range(len(candidates)) if i not in order),
+                       key=lambda i: -candidates[i].score)
+    while len(order) < min(count, len(candidates)) and remaining:
+        order.append(remaining.pop(0))
     winners = [candidates[i] for i in order[:count]]
 
-    clip_lines = [
-        f'{i}. "{m.hook_title}" — {m.reason}' for i, m in enumerate(winners)
-    ]
+    clip_lines = []
+    for i, m in enumerate(winners):
+        line = f'{i}. "{m.hook_title}" — {m.reason}'
+        if transcript is not None:
+            excerpt = [w["word"] for w in transcript
+                       if m.start <= w["start"] < m.end][:40]
+            if excerpt:
+                line += "\n   Excerpt: " + " ".join(excerpt)
+        clip_lines.append(line)
     captions = _llm_json(llm, _CAPTION_PROMPT.format(clips="\n".join(clip_lines)),
                          list, log_fn)
     if captions:
@@ -274,13 +293,20 @@ def find_best_moments(
     if not candidates:
         raise MomentsError(
             "The LLM found no viable moments. Try widening the duration "
-            "range or check that the video has spoken content.")
+            "range or check that the video has spoken content. If you are "
+            "using a small-context local model (e.g. Ollama llama3.1:8b "
+            "with a 4k context), it may silently truncate the 10-minute "
+            "transcript windows — try a larger-context model.")
     candidates = dedupe_candidates(candidates)
     if log_fn:
         log_fn(f"{len(candidates)} candidates after dedup; ranking...")
-    winners = _rank_and_caption(candidates, llm, count, log_fn)
+    winners = _rank_and_caption(candidates, llm, count, log_fn, transcript=transcript)
     for m in winners:
-        m.start, m.end = snap_moment(m.start, m.end, transcript)
+        s, e = snap_moment(m.start, m.end, transcript)
+        # Keep the snap only if it doesn't push the clip outside the
+        # requested duration bounds; otherwise revert to raw boundaries.
+        if min_dur <= e - s <= max_dur:
+            m.start, m.end = s, e
     return winners
 
 
@@ -301,16 +327,18 @@ def write_deliverables(moments: list[Moment], title: str, target_dir: str):
             "caption": m.caption,
         })
     with open(os.path.join(target_dir, "moments.json"), "w", encoding="utf-8") as f:
-        json.dump(entries, f, indent=2)
+        json.dump(entries, f, indent=2, ensure_ascii=False)
 
     lines = [f"# Best Moments Report — {title}", ""]
     for i, e in enumerate(entries, 1):
-        mm_s, ss_s = divmod(int(e["start"]), 60)
+        h_s, rem_s = divmod(int(e["start"]), 3600)
+        mm_s, ss_s = divmod(rem_s, 60)
+        ts = f"{h_s}:{mm_s:02d}:{ss_s:02d}" if h_s else f"{mm_s}:{ss_s:02d}"
         lines += [
             f"## Clip {i}: {e['hook_title']}",
             "",
             f"- **File:** `{e['file']}`",
-            f"- **Source timestamp:** {mm_s}:{ss_s:02d} ({e['duration']:.0f}s)",
+            f"- **Source timestamp:** {ts} ({e['duration']:.0f}s)",
             f"- **Virality score:** {e['score']}/100",
             f"- **Why this clip:** {e['reason']}",
             "",
