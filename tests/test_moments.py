@@ -44,3 +44,27 @@ class TestMomentDataclass:
         m = Moment(start=1.0, end=31.0, score=80, hook_title="T", reason="R")
         assert m.end - m.start == 30.0
         assert m.caption == ""
+
+
+from src.moments import _extract_json
+
+
+class TestExtractJson:
+    def test_plain_array(self):
+        assert _extract_json('[{"a": 1}]', list) == [{"a": 1}]
+
+    def test_code_fenced(self):
+        text = '```json\n[{"a": 1}]\n```'
+        assert _extract_json(text, list) == [{"a": 1}]
+
+    def test_surrounding_prose(self):
+        text = 'Here are the moments:\n[{"a": 1}]\nHope that helps!'
+        assert _extract_json(text, list) == [{"a": 1}]
+
+    def test_dict_kind_ignores_inner_array(self):
+        text = 'Result: {"top": [2, 0, 1]}'
+        assert _extract_json(text, dict) == {"top": [2, 0, 1]}
+
+    def test_garbage_raises(self):
+        with pytest.raises(ValueError):
+            _extract_json("no json here", list)

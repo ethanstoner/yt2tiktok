@@ -53,3 +53,19 @@ def chunk_transcript(
             break
         start = end - overlap_seconds
     return windows
+
+
+def _extract_json(text: str, kind: type):
+    """Extract a JSON list or dict from LLM output that may include
+    code fences or surrounding prose. kind is list or dict."""
+    text = text.strip()
+    text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    open_ch, close_ch = ("[", "]") if kind is list else ("{", "}")
+    s, e = text.find(open_ch), text.rfind(close_ch)
+    if s == -1 or e <= s:
+        raise ValueError(f"No JSON {kind.__name__} found in LLM response.")
+    parsed = json.loads(text[s:e + 1])
+    if not isinstance(parsed, kind):
+        raise ValueError(f"Expected JSON {kind.__name__}.")
+    return parsed
