@@ -102,10 +102,10 @@ class LLMProvider:
         default = info.get("default_model", "")
         return [default] if default else []
 
-    def complete(self, prompt: str, max_tokens: int = 256) -> str:
+    def complete(self, prompt: str, max_tokens: int = 256, timeout: int = 30) -> str:
         if self.format == "anthropic":
-            return self._complete_anthropic(prompt, max_tokens)
-        return self._complete_openai(prompt, max_tokens)
+            return self._complete_anthropic(prompt, max_tokens, timeout)
+        return self._complete_openai(prompt, max_tokens, timeout)
 
     def _handle_http_error(self, r: requests.Response):
         status = r.status_code
@@ -121,7 +121,7 @@ class LLMProvider:
             raise LLMError(f"{self.provider} server error ({status}). Try again later.")
         r.raise_for_status()
 
-    def _complete_openai(self, prompt: str, max_tokens: int) -> str:
+    def _complete_openai(self, prompt: str, max_tokens: int, timeout: int) -> str:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -136,7 +136,7 @@ class LLMProvider:
                 f"{self.base_url}/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30,
+                timeout=timeout,
             )
             if not r.ok:
                 self._handle_http_error(r)
@@ -147,9 +147,9 @@ class LLMProvider:
         except ConnectionError:
             raise LLMError(f"Cannot connect to {self.provider}. Check your base URL and network.")
         except Timeout:
-            raise LLMError(f"{self.provider} request timed out after 30s.")
+            raise LLMError(f"{self.provider} request timed out after {timeout}s.")
 
-    def _complete_anthropic(self, prompt: str, max_tokens: int) -> str:
+    def _complete_anthropic(self, prompt: str, max_tokens: int, timeout: int) -> str:
         headers = {
             "Content-Type": "application/json",
             "x-api-key": self.api_key,
@@ -165,7 +165,7 @@ class LLMProvider:
                 f"{self.base_url}/messages",
                 headers=headers,
                 json=payload,
-                timeout=30,
+                timeout=timeout,
             )
             if not r.ok:
                 self._handle_http_error(r)
@@ -176,4 +176,4 @@ class LLMProvider:
         except ConnectionError:
             raise LLMError(f"Cannot connect to Anthropic API. Check your network.")
         except Timeout:
-            raise LLMError(f"Anthropic API request timed out after 30s.")
+            raise LLMError(f"Anthropic API request timed out after {timeout}s.")
