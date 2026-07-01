@@ -144,3 +144,20 @@ def _candidates_for_window(
         moments.append(Moment(start=start, end=end, score=score,
                               hook_title=hook, reason=reason))
     return moments
+
+
+def dedupe_candidates(candidates: list[Moment]) -> list[Moment]:
+    """Merge candidates whose time ranges overlap >= 50% of the shorter
+    one, keeping the higher-scored. Result sorted by start time."""
+    survivors: list[Moment] = []
+    for cand in sorted(candidates, key=lambda m: -m.score):
+        clash = False
+        for kept in survivors:
+            overlap = min(cand.end, kept.end) - max(cand.start, kept.start)
+            shorter = min(cand.end - cand.start, kept.end - kept.start)
+            if shorter > 0 and overlap / shorter >= 0.5:
+                clash = True
+                break
+        if not clash:
+            survivors.append(cand)
+    return sorted(survivors, key=lambda m: m.start)

@@ -129,3 +129,26 @@ class TestCandidatePass:
                        '"hook_title": "t", "reason": "r"}]'])
         cands = _candidates_for_window(window, llm, min_dur=20.0, max_dur=90.0)
         assert len(cands) == 1
+
+
+from src.moments import dedupe_candidates
+
+
+class TestDedupe:
+    def test_heavy_overlap_keeps_higher_score(self):
+        a = Moment(start=10.0, end=40.0, score=90, hook_title="A", reason="")
+        b = Moment(start=12.0, end=42.0, score=60, hook_title="B", reason="")
+        result = dedupe_candidates([b, a])
+        assert result == [a]
+
+    def test_light_overlap_keeps_both(self):
+        a = Moment(start=10.0, end=40.0, score=90, hook_title="A", reason="")
+        b = Moment(start=35.0, end=70.0, score=60, hook_title="B", reason="")
+        # overlap 5s / min(30,35)=30 → 17% < 50%
+        result = dedupe_candidates([a, b])
+        assert len(result) == 2
+
+    def test_disjoint_keeps_both(self):
+        a = Moment(start=10.0, end=40.0, score=90, hook_title="A", reason="")
+        b = Moment(start=100.0, end=130.0, score=60, hook_title="B", reason="")
+        assert len(dedupe_candidates([a, b])) == 2
