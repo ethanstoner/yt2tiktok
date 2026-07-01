@@ -277,10 +277,15 @@ def build_overlay_filters(title: str, idx: int, top_text: str | None, show_part_
     display_top = top_text if top_text else title
     wrapped_title, title_fontsize, num_lines = wrap_text_to_fit(
         display_top, max_width_px=1080 - 80, max_height_px=top_bar_height, max_fontsize=80)
+    # Escape chars that are special to ffmpeg's filtergraph/drawtext parsing:
+    # backslash first, then % (strftime/expansion), then : (option separator).
+    # A quote inside the '-quoted text value cannot be backslash-escaped;
+    # it needs the close-quote/escaped-quote/reopen idiom ('\'').
     safe_title = (
         wrapped_title.replace("\\", "\\\\")
         .replace("%", "\\%")
-        .replace("'", "\\'")
+        .replace(":", "\\:")
+        .replace("'", "'\\''")
     )
     borderw = 5
     text_pad = borderw * 2 + 8
