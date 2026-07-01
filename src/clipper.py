@@ -266,27 +266,29 @@ def calculate_cut_points(
 
 
 def build_overlay_filters(title: str, idx: int, top_text: str | None, show_part_label: bool,
-                          top_bar_height: int = 140, pad_y: int = 140) -> str:
+                          top_bar_height: int = 140, pad_y: int = 140,
+                          textfile_path: str | None = None) -> str:
     """Build the drawtext filter string for the top text (hook title or
     video title) and optional bottom Part label. Empty string if no font.
+
+    The top text is written to textfile_path (UTF-8) and referenced via
+    textfile=...:expansion=none. Inline text= is NOT safe for free-form
+    text: ffmpeg 7.1's filtergraph parser silently corrupts quoted
+    apostrophes (filter options get burned into the frame with returncode
+    0) and argv-encoded non-ASCII renders nothing on Windows.
 
     top_bar_height/pad_y come from process_clip's dimension-aware
     computation; the 140 defaults match its minimum reserved band."""
     if not FONT_PATH:
         return ""
+    if textfile_path is None:
+        raise ValueError("textfile_path is required to render overlay text")
     display_top = top_text if top_text else title
     wrapped_title, title_fontsize, num_lines = wrap_text_to_fit(
         display_top, max_width_px=1080 - 80, max_height_px=top_bar_height, max_fontsize=80)
-    # Escape chars that are special to ffmpeg's filtergraph/drawtext parsing:
-    # backslash first, then % (strftime/expansion), then : (option separator).
-    # A quote inside the '-quoted text value cannot be backslash-escaped;
-    # it needs the close-quote/escaped-quote/reopen idiom ('\'').
-    safe_title = (
-        wrapped_title.replace("\\", "\\\\")
-        .replace("%", "\\%")
-        .replace(":", "\\:")
-        .replace("'", "'\\''")
-    )
+    with open(textfile_path, "w", encoding="utf-8") as fh:
+        fh.write(wrapped_title)
+    safe_textfile = textfile_path.replace("\\", "/").replace(":", "\\:")
     borderw = 5
     text_pad = borderw * 2 + 8
     safe_font = FONT_PATH.replace("\\", "/").replace(":", "\\:")
@@ -296,7 +298,7 @@ def build_overlay_filters(title: str, idx: int, top_text: str | None, show_part_
     title_block_h = num_lines * base_h + (num_lines - 1) * line_spacing
     top_text_y = (top_bar_height - title_block_h) // 2 + text_pad
     filters = (
-        f"drawtext=fontfile='{safe_font}':text='{safe_title}':fontcolor=white:"
+        f"drawtext=fontfile='{safe_font}':textfile='{safe_textfile}':expansion=none:fontcolor=white:"
         f"fontsize={title_fontsize}:x=(w-text_w)/2:y={top_text_y}:"
         f"borderw={borderw}:bordercolor=black:line_spacing=12:text_align=center"
     )
@@ -305,8 +307,10 @@ def build_overlay_filters(title: str, idx: int, top_text: str | None, show_part_
         font_bottom = ImageFont.truetype(FONT_PATH, bottom_fontsize)
         bottom_h = font_bottom.getbbox("A")[3] - font_bottom.getbbox("A")[1]
         bottom_text_y = (1920 - pad_y) + (pad_y - bottom_h) // 2 + text_pad
+        # Fully controlled ASCII, safe inline; expansion=none anyway so a
+        # literal % could never be expanded.
         filters += (
-            f",drawtext=fontfile='{safe_font}':text='Part {idx}':fontcolor=white:"
+            f",drawtext=fontfile='{safe_font}':text='Part {idx}':expansion=none:fontcolor=white:"
             f"fontsize={bottom_fontsize}:x=(w-text_w)/2:y={bottom_text_y}:"
             f"borderw={borderw}:bordercolor=black"
         )
@@ -325,47 +329,55 @@ def process_clip(video_path: str, title: str, idx: int, total: int, start: float
     # reserve a minimum band so the title/part overlays stay on-screen.
     pad_y = max(pad_y, 140)
     top_bar_height = pad_y
-    text_filters = build_overlay_filters(title, idx, top_text, show_part_label, top_bar_height=top_bar_height, pad_y=pad_y)
-    safe_ass = ""
-    fonts_dir = str(Path(__file__).parent.parent / "fonts").replace("\\", "/").replace(":", "\\:")
-    if caption_ass:
-        safe_ass = caption_ass.replace("\\", "/").replace(":", "\\:")
-    ass_suffix = f",ass='{safe_ass}':fontsdir='{fonts_dir}'" if caption_ass else ""
-    text_and_ass = (f",{text_filters}" if text_filters else "") + ass_suffix
-    if mode == "blurred":
-        filter_chain = (
-            "[0:v]scale=540:960,gblur=sigma=30,scale=1080:1920:flags=lanczos,setsar=1[bg];"
-            "[0:v]scale=1080:ih*1080/iw:force_original_aspect_ratio=decrease,setsar=1[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2{text_and_ass}[v]"
-        )
-        filter_flag = "-filter_complex"
-        map_args = ["-map", "[v]", "-map", "0:a?"]
-    else:
-        filter_chain = (
-            "scale=1080:ih*1080/iw:force_original_aspect_ratio=decrease,"
-            f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black{text_and_ass}"
-        )
-        filter_flag = "-vf"
-        map_args = []
-    cmd = [FFMPEG_CMD, "-y", "-ss", str(start), "-t", str(duration), "-i", video_path, filter_flag, filter_chain, *map_args, *_build_encoder_args(), "-c:a", "aac", "-b:a", "128k", out]
-    if log_fn:
-        log_fn(f"Encoding clip {idx}/{total}...")
+    # Unique per clip: process_clip runs concurrently in a thread pool.
+    overlay_textfile = os.path.join(target_dir, f"_title_{idx}.txt")
     try:
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        _, stderr = process.communicate()
-        if process.returncode != 0:
+        text_filters = build_overlay_filters(title, idx, top_text, show_part_label, top_bar_height=top_bar_height, pad_y=pad_y, textfile_path=overlay_textfile)
+        safe_ass = ""
+        fonts_dir = str(Path(__file__).parent.parent / "fonts").replace("\\", "/").replace(":", "\\:")
+        if caption_ass:
+            safe_ass = caption_ass.replace("\\", "/").replace(":", "\\:")
+        ass_suffix = f",ass='{safe_ass}':fontsdir='{fonts_dir}'" if caption_ass else ""
+        text_and_ass = (f",{text_filters}" if text_filters else "") + ass_suffix
+        if mode == "blurred":
+            filter_chain = (
+                "[0:v]scale=540:960,gblur=sigma=30,scale=1080:1920:flags=lanczos,setsar=1[bg];"
+                "[0:v]scale=1080:ih*1080/iw:force_original_aspect_ratio=decrease,setsar=1[fg];"
+                f"[bg][fg]overlay=(W-w)/2:(H-h)/2{text_and_ass}[v]"
+            )
+            filter_flag = "-filter_complex"
+            map_args = ["-map", "[v]", "-map", "0:a?"]
+        else:
+            filter_chain = (
+                "scale=1080:ih*1080/iw:force_original_aspect_ratio=decrease,"
+                f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black{text_and_ass}"
+            )
+            filter_flag = "-vf"
+            map_args = []
+        cmd = [FFMPEG_CMD, "-y", "-ss", str(start), "-t", str(duration), "-i", video_path, filter_flag, filter_chain, *map_args, *_build_encoder_args(), "-c:a", "aac", "-b:a", "128k", out]
+        if log_fn:
+            log_fn(f"Encoding clip {idx}/{total}...")
+        try:
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+            _, stderr = process.communicate()
+            if process.returncode != 0:
+                if log_fn:
+                    log_fn(f"FFmpeg error on clip {idx}: {stderr[:200]}")
+                if os.path.exists(out):
+                    os.remove(out)
+                return None
+        except Exception as e:
             if log_fn:
-                log_fn(f"FFmpeg error on clip {idx}: {stderr[:200]}")
+                log_fn(f"Error processing clip {idx}: {e}")
             if os.path.exists(out):
                 os.remove(out)
             return None
-    except Exception as e:
-        if log_fn:
-            log_fn(f"Error processing clip {idx}: {e}")
-        if os.path.exists(out):
-            os.remove(out)
-        return None
-    return out
+        return out
+    finally:
+        try:
+            os.remove(overlay_textfile)
+        except OSError:
+            pass
 
 
 def split_video(

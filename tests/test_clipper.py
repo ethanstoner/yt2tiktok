@@ -100,15 +100,25 @@ from src.clipper import build_overlay_filters, FONT_PATH, FFMPEG_CMD
 
 class TestBuildOverlayFilters:
     @pytest.mark.skipif(not FONT_PATH, reason="no caption font available")
-    def test_default_has_title_and_part(self):
-        f = build_overlay_filters("My Title", 1, top_text=None, show_part_label=True)
-        assert "My Title" in f
+    def test_default_has_title_and_part(self, tmp_path):
+        tf = str(tmp_path / "title.txt")
+        f = build_overlay_filters("My Title", 1, top_text=None, show_part_label=True,
+                                  textfile_path=tf)
+        # Top text travels via a UTF-8 textfile, never inline in the filter.
+        assert (tmp_path / "title.txt").read_text(encoding="utf-8") == "My Title"
+        assert "textfile=" in f
+        assert "expansion=none" in f
+        assert "My Title" not in f
         assert "Part 1" in f
 
     @pytest.mark.skipif(not FONT_PATH, reason="no caption font available")
-    def test_custom_top_text_replaces_title(self):
-        f = build_overlay_filters("My Title", 1, top_text="INSANE story", show_part_label=False)
-        assert "INSANE story" in f
+    def test_custom_top_text_replaces_title(self, tmp_path):
+        tf = str(tmp_path / "title.txt")
+        f = build_overlay_filters("My Title", 1, top_text="INSANE story",
+                                  show_part_label=False, textfile_path=tf)
+        content = (tmp_path / "title.txt").read_text(encoding="utf-8")
+        assert "INSANE story" in content
+        assert "My Title" not in content
         assert "My Title" not in f
         assert "Part" not in f
 
@@ -118,30 +128,46 @@ class TestBuildOverlayFilters:
         assert build_overlay_filters("T", 1, None, True) == ""
 
     @pytest.mark.skipif(not FONT_PATH, reason="no caption font available")
-    def test_colons_and_apostrophes_are_escaped(self):
-        f = build_overlay_filters("Plot twist: it's over, really", 1, None, True)
-        # Colon in the text must be escaped (\:), otherwise ffmpeg treats it
-        # as an option separator and errors out.
-        assert "twist\\:" in f
-        assert "twist: " not in f
-        # Apostrophe must use the close-quote/escaped-quote/reopen idiom
-        # ('\''); a bare or backslash-escaped quote breaks filtergraph
-        # quoting and burns raw filter options into the video as text.
-        assert "'\\''" in f
+    def test_missing_textfile_path_raises(self):
+        with pytest.raises(ValueError):
+            build_overlay_filters("T", 1, None, True)
+
+    @pytest.mark.skipif(not FONT_PATH, reason="no caption font available")
+    def test_special_chars_go_to_textfile_not_filter(self, tmp_path):
+        raw = "Plot twist: it's over, really 100%"
+        tf = str(tmp_path / "title.txt")
+        f = build_overlay_filters(raw, 1, None, True, textfile_path=tf)
+        # No raw user text may appear in the filter string — ffmpeg 7.1's
+        # filtergraph parser silently corrupts inline quotes/percent.
+        assert "Plot" not in f
+        assert "twist" not in f
         assert "it's" not in f
-        assert "\\'s" not in f
-        # Legit option separators must remain untouched.
+        # The text lands verbatim in the file (modulo line wrapping).
+        content = (tmp_path / "title.txt").read_text(encoding="utf-8")
+        assert content.replace("\n", " ") == raw
+        # textfile path escaped like fontfile: forward slashes, colon -> \:
+        safe_tf = tf.replace("\\", "/").replace(":", "\\:")
+        assert f"textfile='{safe_tf}':expansion=none" in f
+        # Both drawtext calls disable expansion; option separators intact.
+        assert f.count("expansion=none") == 2
         assert ":fontcolor=white:" in f
 
     @pytest.mark.skipif(FFMPEG_CMD is None, reason="ffmpeg not available")
     @pytest.mark.skipif(not FONT_PATH, reason="no caption font available")
-    def test_ffmpeg_accepts_special_chars_in_overlay(self):
+    def test_ffmpeg_accepts_special_chars_in_overlay(self, tmp_path):
         import subprocess
-        f = build_overlay_filters("Plot twist: it's over, really", 1, None, True)
+        # Apostrophe, unicode apostrophe, colon, comma, percent — every one
+        # of these has a known silent-corruption mode with inline text=.
+        text = "Plot twist: it’s 100% wild, isn't it"
+        tf = str(tmp_path / "title.txt")
+        f = build_overlay_filters(text, 1, None, True, textfile_path=tf)
         cmd = [
             FFMPEG_CMD, "-v", "error",
             "-f", "lavfi", "-i", "color=c=black:s=320x240:d=0.1",
             "-vf", f, "-f", "null", "-",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        # Return code alone is NOT enough: several corruption modes exit 0
+        # while burning filter options into the frame or dropping glyphs.
         assert result.returncode == 0, f"ffmpeg rejected filter: {result.stderr[:500]}"
+        assert result.stderr.strip() == "", f"ffmpeg emitted errors: {result.stderr[:500]}"
