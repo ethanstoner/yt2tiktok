@@ -68,3 +68,64 @@ class TestExtractJson:
     def test_garbage_raises(self):
         with pytest.raises(ValueError):
             _extract_json("no json here", list)
+
+
+from src.moments import _candidates_for_window
+
+
+class FakeLLM:
+    """Returns queued responses in order; records prompts."""
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.prompts = []
+
+    def is_available(self):
+        return True
+
+    def complete(self, prompt, max_tokens=256, timeout=30):
+        self.prompts.append(prompt)
+        if not self.responses:
+            raise AssertionError("FakeLLM ran out of responses")
+        return self.responses.pop(0)
+
+
+class TestCandidatePass:
+    def test_valid_candidates_parsed(self):
+        window = make_transcript(120)  # 120 words, 1/sec
+        llm = FakeLLM(['[{"start_idx": 10, "end_idx": 40, "score": 85, '
+                       '"hook_title": "Big reveal", "reason": "Strong hook"}]'])
+        cands = _candidates_for_window(window, llm, min_dur=20.0, max_dur=90.0)
+        assert len(cands) == 1
+        m = cands[0]
+        assert m.start == window[10]["start"]
+        assert m.end == window[40]["end"]
+        assert m.score == 85
+        assert m.hook_title == "Big reveal"
+
+    def test_out_of_bounds_and_too_short_dropped(self):
+        window = make_transcript(120)
+        llm = FakeLLM(['['
+                       '{"start_idx": 10, "end_idx": 15, "score": 90, "hook_title": "x", "reason": "too short"},'
+                       '{"start_idx": 100, "end_idx": 999, "score": 90, "hook_title": "x", "reason": "oob"},'
+                       '{"start_idx": 50, "end_idx": 20, "score": 90, "hook_title": "x", "reason": "reversed"},'
+                       '{"start_idx": 10, "end_idx": 40, "score": 80, "hook_title": "ok", "reason": "good"}'
+                       ']'])
+        cands = _candidates_for_window(window, llm, min_dur=20.0, max_dur=90.0)
+        assert len(cands) == 1
+        assert cands[0].hook_title == "ok"
+
+    def test_malformed_json_retries_once_then_gives_up(self):
+        window = make_transcript(120)
+        llm = FakeLLM(["not json at all", "still not json"])
+        cands = _candidates_for_window(window, llm, min_dur=20.0, max_dur=90.0)
+        assert cands == []
+        assert len(llm.prompts) == 2
+        assert "ONLY" in llm.prompts[1]  # stricter retry prompt
+
+    def test_retry_succeeds_second_time(self):
+        window = make_transcript(120)
+        llm = FakeLLM(["garbage",
+                       '[{"start_idx": 10, "end_idx": 40, "score": 70, '
+                       '"hook_title": "t", "reason": "r"}]'])
+        cands = _candidates_for_window(window, llm, min_dur=20.0, max_dur=90.0)
+        assert len(cands) == 1
