@@ -219,3 +219,33 @@ def _rank_and_caption(candidates: list[Moment], llm, count: int, log_fn=None) ->
             if 0 <= idx < len(winners):
                 winners[idx].caption = text
     return winners
+
+
+def _nearest_gap_mid(transcript: list[dict], t: float) -> float | None:
+    """Midpoint of the silence gap (>= MIN_GAP) whose midpoint is closest
+    to t, within SNAP_WINDOW. None if no qualifying gap."""
+    best_mid, best_dist = None, SNAP_WINDOW
+    for a, b in zip(transcript, transcript[1:]):
+        gap = b["start"] - a["end"]
+        if gap < MIN_GAP:
+            continue
+        mid = (a["end"] + b["start"]) / 2
+        dist = abs(mid - t)
+        if dist <= best_dist:
+            best_mid, best_dist = mid, dist
+    return best_mid
+
+
+def snap_moment(start: float, end: float, transcript: list[dict]) -> tuple[float, float]:
+    """Shift boundaries to nearby silence gaps, then back the start up
+    slightly before the first word so the hook is never clipped."""
+    s = _nearest_gap_mid(transcript, start)
+    e = _nearest_gap_mid(transcript, end)
+    if s is not None:
+        start = s
+    if e is not None:
+        end = e
+    first = next((w for w in transcript if w["start"] >= start), None)
+    if first is not None and first["start"] < end:
+        start = max(0.0, first["start"] - PRE_ROLL)
+    return start, end

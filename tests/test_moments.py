@@ -200,3 +200,44 @@ class TestRankAndCaption:
                        '[{"index": 0, "caption": "c1"}, {"index": 1, "caption": "c2"}]'])
         winners = _rank_and_caption(_three_candidates(), llm, count=2)
         assert [m.hook_title for m in winners] == ["B", "A"]
+
+
+from src.moments import snap_moment
+
+
+class TestSnapMoment:
+    def _contiguous_with_gap(self):
+        """Contiguous words (each word's end == next word's start, so no
+        qualifying silence gaps anywhere) at 1 word/sec, EXCEPT one
+        deliberate 1.8s silence between word 29 (ends 30.0) and word 30
+        (starts 31.8). Gap midpoint = 30.9."""
+        tr = []
+        t = 0.0
+        for i in range(60):
+            tr.append({"word": f"w{i}", "start": round(t, 3),
+                       "end": round(t + 1.0, 3), "confidence": 1.0})
+            t += 1.0 if i != 29 else 2.8
+        return tr
+
+    def test_start_snaps_to_gap_then_backs_up_before_word(self):
+        tr = self._contiguous_with_gap()
+        # Gap mid 30.9 is within ±2s of raw start 29.5 → snap there,
+        # then back up 0.3s before word 30 (starts 31.8) → 31.5.
+        start, end = snap_moment(29.5, 50.0, tr)
+        assert abs(start - 31.5) < 0.01
+        # No qualifying gap within ±2s of 50.0 → end unchanged.
+        assert end == 50.0
+
+    def test_no_gap_nearby_pre_rolls_before_word(self):
+        tr = self._contiguous_with_gap()
+        # No silence gap near 10.0 → boundary kept, then pre-roll 0.3s
+        # before word 10 (starts exactly at 10.0) → 9.7.
+        start, end = snap_moment(10.0, 20.0, tr)
+        assert abs(start - 9.7) < 0.01
+
+    def test_start_never_negative(self):
+        tr = [{"word": "w0", "start": 0.1, "end": 0.5, "confidence": 1.0},
+              {"word": "w1", "start": 0.5, "end": 1.0, "confidence": 1.0}]
+        # Pre-roll would give 0.1 - 0.3 = -0.2 → clamped to 0.0.
+        start, _ = snap_moment(0.0, 1.0, tr)
+        assert start == 0.0
