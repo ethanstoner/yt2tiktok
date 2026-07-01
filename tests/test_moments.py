@@ -366,3 +366,33 @@ class TestSnapRevert:
         m = moments[0]
         assert m.start == 10.0
         assert abs(m.end - 30.8) < 0.01
+
+
+from src.workers import compute_best_moments_cuts
+
+
+class TestComputeBestMomentsCuts:
+    def _llm(self):
+        return FakeLLM([
+            '[{"start_idx": 20, "end_idx": 55, "score": 85, "hook_title": "Hook A", "reason": "ra"},'
+            ' {"start_idx": 150, "end_idx": 190, "score": 70, "hook_title": "Hook B", "reason": "rb"}]',
+            '{"top": [0, 1]}',
+            '[{"index": 0, "caption": "capA"}, {"index": 1, "caption": "capB"}]',
+        ])
+
+    def test_returns_cuts_overlays_and_moments(self):
+        tr = make_transcript(300)
+        cuts, overlay_map, moments = compute_best_moments_cuts(
+            tr, self._llm(), count=2, min_dur=20.0, max_dur=90.0, log_fn=None)
+        assert len(cuts) == 2
+        # (start, duration) conversion happens HERE (worker layer), not in moments.py
+        for (start, dur), m in zip(cuts, moments):
+            assert start == m.start
+            assert abs(dur - (m.end - m.start)) < 1e-6
+            assert dur > 0
+        assert overlay_map == {1: "Hook A", 2: "Hook B"}
+
+    def test_no_llm_raises(self):
+        tr = make_transcript(300)
+        with pytest.raises(Exception):
+            compute_best_moments_cuts(tr, None, 2, 20.0, 90.0, None)

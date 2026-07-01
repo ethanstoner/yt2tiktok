@@ -9,6 +9,7 @@ from src import clipper
 from src import uploader
 from src import transcriber
 from src import captioner
+from src import moments as moments_mod
 from src.llm_provider import LLMProvider
 
 log_queue: queue.Queue[str] = queue.Queue()
@@ -37,10 +38,29 @@ def reset_cancel():
     _cancel_event.clear()
 
 
+def compute_best_moments_cuts(transcript, llm, count, min_dur, max_dur, log_fn):
+    """Run best-moments selection and convert Moment objects to the
+    (start, duration) tuples split_video expects, plus the per-clip
+    hook-title overlay map. Raises MomentsError / ValueError upward."""
+    if llm is None:
+        raise moments_mod.MomentsError(
+            "Best Moments mode requires a configured LLM.")
+    if not transcript:
+        raise moments_mod.MomentsError(
+            "Best Moments mode requires a transcript.")
+    found = moments_mod.find_best_moments(
+        transcript, llm, count=count, min_dur=float(min_dur),
+        max_dur=float(max_dur), log_fn=log_fn)
+    cuts = [(m.start, m.end - m.start) for m in found]
+    overlay_map = {i: m.hook_title for i, m in enumerate(found, 1)}
+    return cuts, overlay_map, found
+
+
 def clipper_worker(
     url, local_path, cookie_file, mode, cut_mode,
     captions_enabled, preset_name, y_position,
     llm_instance,
+    moments_count, moments_min_dur, moments_max_dur,
     state, clip_btn, preview_btn, cancel_btn,
 ):
     # NOTE: the cancel flag is reset by the caller (ClipTab._on_clip)
@@ -66,21 +86,22 @@ def clipper_worker(
 
         duration = clipper.get_video_duration(video_path)
         est_clips = int(duration / 65) + 1
-        if duration > clipper.WARN_DURATION or est_clips > clipper.WARN_CLIPS:
-            log(f"Warning: Video is {duration/60:.0f} min, ~{est_clips} clips.")
-            result = [None]
-            event = threading.Event()
-            def ask():
-                result[0] = messagebox.askyesno(
-                    "Long Video",
-                    f"This video is {duration/60:.0f} minutes and will produce ~{est_clips} clips.\n\nContinue?",
-                )
-                event.set()
-            clip_btn.winfo_toplevel().after(0, ask)
-            event.wait()
-            if not result[0]:
-                log("Clipping cancelled by user.")
-                return
+        if cut_mode != "best_moments":
+            if duration > clipper.WARN_DURATION or est_clips > clipper.WARN_CLIPS:
+                log(f"Warning: Video is {duration/60:.0f} min, ~{est_clips} clips.")
+                result = [None]
+                event = threading.Event()
+                def ask():
+                    result[0] = messagebox.askyesno(
+                        "Long Video",
+                        f"This video is {duration/60:.0f} minutes and will produce ~{est_clips} clips.\n\nContinue?",
+                    )
+                    event.set()
+                clip_btn.winfo_toplevel().after(0, ask)
+                event.wait()
+                if not result[0]:
+                    log("Clipping cancelled by user.")
+                    return
 
         if is_cancelled():
             log("Clipping cancelled.")
@@ -103,6 +124,10 @@ def clipper_worker(
                 log(f"Transcription failed: {e}")
                 clip_btn.winfo_toplevel().after(0, lambda: state.transcription_status.set("Transcription failed"))
                 transcript = None
+                if cut_mode == "best_moments":
+                    log("Best Moments requires a transcript; aborting.")
+                    progress("")
+                    return
                 if cut_mode != "random":
                     log("Falling back to random cuts")
                     cut_mode = "random"
@@ -112,7 +137,24 @@ def clipper_worker(
             return
 
         llm = llm_instance if llm_instance and llm_instance.is_available() else None
-        cuts = clipper.calculate_cut_points(duration, cut_mode, transcript, llm)
+
+        best_moments = None
+        overlay_map = None
+        show_part_label = True
+        if cut_mode == "best_moments":
+            try:
+                cuts, overlay_map, best_moments = compute_best_moments_cuts(
+                    transcript, llm, moments_count,
+                    moments_min_dur, moments_max_dur, log)
+            except moments_mod.MomentsError as e:
+                log(f"Best Moments failed: {e}")
+                progress("")
+                return
+            show_part_label = False
+            log(f"Selected {len(cuts)} best moments "
+                f"(scores: {', '.join(str(m.score) for m in best_moments)})")
+        else:
+            cuts = clipper.calculate_cut_points(duration, cut_mode, transcript, llm)
         total_clips = len(cuts)
 
         caption_ass_map = {}
@@ -160,8 +202,17 @@ def clipper_worker(
             cut_mode=cut_mode, transcript=transcript, llm=llm,
             caption_ass_map=caption_ass_map,
             cuts=cuts,
+            overlay_map=overlay_map,
+            show_part_label=show_part_label,
             log_fn=log, progress_fn=clip_progress_fn,
         )
+
+        if best_moments:
+            try:
+                moments_mod.write_deliverables(best_moments, title, target_dir)
+                log("Wrote moments.json and report.md (client deliverables)")
+            except OSError as e:
+                log(f"Could not write deliverables report: {e}")
 
         for ass_path in caption_ass_map.values():
             try:
