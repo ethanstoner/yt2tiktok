@@ -323,10 +323,12 @@ class TestRankingHardening:
         assert [m.hook_title for m in winners] == ["C", "B"]
 
     def test_float_indices_coerced(self):
-        llm = FakeLLM(['{"top": [1.0, 0.0]}',
+        # [2.0, 0.0] → C, A only if floats are coerced; if they were
+        # rejected, score-order padding would yield B, A instead.
+        llm = FakeLLM(['{"top": [2.0, 0.0]}',
                        '[{"index": 0, "caption": "c1"}, {"index": 1, "caption": "c2"}]'])
         winners = _rank_and_caption(_three_candidates(), llm, count=2)
-        assert [m.hook_title for m in winners] == ["B", "A"]
+        assert [m.hook_title for m in winners] == ["C", "A"]
 
     def test_caption_prompt_includes_transcript_excerpt(self):
         tr = make_transcript(300)
