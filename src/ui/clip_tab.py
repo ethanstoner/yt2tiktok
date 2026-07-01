@@ -1,7 +1,7 @@
 import os
 import threading
 import customtkinter as ctk
-from tkinter import messagebox
+from tkinter import messagebox, TclError
 from PIL import Image
 
 from src import clipper
@@ -98,8 +98,20 @@ class ClipTab:
         right_opt.pack(side="right", expand=True, fill="x")
         cut_label = ctk.CTkLabel(right_opt, text="Cut Mode", font=("", FONT_LABEL))
         cut_label.pack(anchor="w")
-        ctk.CTkSegmentedButton(right_opt, values=["Random", "Natural Pause", "Cliffhanger"], variable=state.cut_mode).pack(anchor="w", pady=(2, 0))
-        Tooltip(cut_label, "Random: fixed 60-70s clips\nNatural Pause: cuts at silence gaps\nCliffhanger: LLM picks suspenseful cut points")
+        ctk.CTkSegmentedButton(right_opt, values=["Random", "Natural Pause", "Cliffhanger", "Best Moments"], variable=state.cut_mode).pack(anchor="w", pady=(2, 0))
+        Tooltip(cut_label, "Random: fixed 60-70s clips\nNatural Pause: cuts at silence gaps\nCliffhanger: LLM picks suspenseful cut points\nBest Moments: LLM picks only the top viral-worthy clips (requires LLM)")
+
+        # --- Best Moments options (visible only in that mode) ---
+        self.opts_frame = opts_frame
+        self.moments_frame = ctk.CTkFrame(scroll, fg_color="transparent")
+        ctk.CTkLabel(self.moments_frame, text="Clips to make").pack(side="left")
+        ctk.CTkEntry(self.moments_frame, textvariable=state.moments_count, width=50).pack(side="left", padx=(SP_4, SP_12))
+        ctk.CTkLabel(self.moments_frame, text="Min (s)").pack(side="left")
+        ctk.CTkEntry(self.moments_frame, textvariable=state.moments_min_dur, width=50).pack(side="left", padx=(SP_4, SP_12))
+        ctk.CTkLabel(self.moments_frame, text="Max (s)").pack(side="left")
+        ctk.CTkEntry(self.moments_frame, textvariable=state.moments_max_dur, width=50).pack(side="left", padx=(SP_4, 0))
+        state.cut_mode.trace_add("write", self._on_cut_mode_change)
+        self._on_cut_mode_change()
 
         # --- Extra Options ---
         extra_frame = ctk.CTkFrame(scroll, fg_color="transparent")
@@ -187,6 +199,12 @@ class ClipTab:
         path = filedialog.askopenfilename(filetypes=[("Cookie files", "*.txt")])
         if path:
             self.state.yt_cookie.set(path)
+
+    def _on_cut_mode_change(self, *_):
+        if self.state.cut_mode.get() == "Best Moments":
+            self.moments_frame.pack(fill="x", padx=SP_12, pady=SP_4, after=self.opts_frame)
+        else:
+            self.moments_frame.pack_forget()
 
     def _on_clip_dir_change(self, *_):
         if self.state.clip_dir.get():
@@ -313,10 +331,30 @@ class ClipTab:
         else:
             messagebox.showerror("Error", "Enter a YouTube URL or select a local file.")
             return
+        cut = self.state.cut_mode.get().lower().replace(" ", "_")
+        moments_count = moments_min = moments_max = 0
+        if cut == "best_moments":
+            llm = self._get_llm()
+            if llm is None or not llm.is_available():
+                messagebox.showerror(
+                    "LLM Required",
+                    "Best Moments mode needs a configured LLM.\n"
+                    "Enable and set one up in Settings → LLM Settings.")
+                return
+            try:
+                moments_count = int(self.state.moments_count.get())
+                moments_min = int(self.state.moments_min_dur.get())
+                moments_max = int(self.state.moments_max_dur.get())
+                if moments_count < 1 or moments_min < 5 or moments_max <= moments_min:
+                    raise ValueError
+            except (ValueError, TypeError, TclError):
+                messagebox.showerror(
+                    "Invalid Settings",
+                    "Check Best Moments settings: clips ≥ 1, min ≥ 5s, max > min.")
+                return
         self.clip_btn.configure(state="disabled", text="Clipping...")
         self.cancel_btn.pack(side="right", padx=(SP_4, 0))
         self.preview_btn.configure(state="disabled")
-        cut = self.state.cut_mode.get().lower().replace(" ", "_")
         # Clear any stale cancel flag before the worker starts, so a cancel
         # requested between start() and the worker body can't be lost.
         self.workers.reset_cancel()
@@ -327,6 +365,7 @@ class ClipTab:
                 self.state.yt_cookie.get().strip(), self.state.mode.get(), cut,
                 self.state.captions_enabled.get(), self.state.preset.get(), self.state.caption_y.get(),
                 self._get_llm(),
+                moments_count, moments_min, moments_max,
                 self.state, self.clip_btn, self.preview_btn, self.cancel_btn,
             ),
             daemon=True,
