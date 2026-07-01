@@ -79,3 +79,9 @@ class TestConfig:
     def test_unicode_round_trip(self, temp_config):
         cfg.set("caption_template", "{title} 🔥 Part {part}")
         assert cfg.get("caption_template") == "{title} 🔥 Part {part}"
+
+    def test_moments_defaults(self):
+        from src import config
+        assert config.DEFAULTS["moments_count"] == 5
+        assert config.DEFAULTS["moments_min_dur"] == 20
+        assert config.DEFAULTS["moments_max_dur"] == 90

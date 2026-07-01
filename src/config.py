@@ -27,6 +27,9 @@ DEFAULTS = {
     "window_geometry": "750x900",
     "last_cookie_path": "",
     "keep_source_video": False,
+    "moments_count": 5,
+    "moments_min_dur": 20,
+    "moments_max_dur": 90,
     "onboarding_completed": False,
 }
 

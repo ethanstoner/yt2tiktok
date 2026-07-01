@@ -27,6 +27,9 @@ class AppState:
         self.caption_y = ctk.DoubleVar(value=cfg.get("caption_y"))
         self.transcription_status = ctk.StringVar(value="")
         self.keep_source_video = ctk.BooleanVar(value=cfg.get("keep_source_video"))
+        self.moments_count = ctk.IntVar(value=cfg.get("moments_count"))
+        self.moments_min_dur = ctk.IntVar(value=cfg.get("moments_min_dur"))
+        self.moments_max_dur = ctk.IntVar(value=cfg.get("moments_max_dur"))
 
         # Upload tab
         self.tk_cookie = ctk.StringVar(value=uploader.load_last_cookie_path())
@@ -68,6 +71,9 @@ class AppState:
             (self.llm_model, "llm_model"),
             (self.llm_base_url, "llm_base_url"),
             (self.keep_source_video, "keep_source_video"),
+            (self.moments_count, "moments_count"),
+            (self.moments_min_dur, "moments_min_dur"),
+            (self.moments_max_dur, "moments_max_dur"),
         ]
         for var, key in persist_list:
             var.trace_add("write", lambda *_, k=key, v=var: (
@@ -128,5 +134,8 @@ class AppState:
             _set(self.llm_model, cfg.get("llm_model"), str)
             _set(self.llm_base_url, cfg.get("llm_base_url"), str)
             _set(self.keep_source_video, cfg.get("keep_source_video"), bool)
+            _set(self.moments_count, cfg.get("moments_count"), int)
+            _set(self.moments_min_dur, cfg.get("moments_min_dur"), int)
+            _set(self.moments_max_dur, cfg.get("moments_max_dur"), int)
         finally:
             self._initializing = False
