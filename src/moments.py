@@ -9,11 +9,18 @@ from dataclasses import dataclass, field
 
 WINDOW_SECONDS = 600.0
 OVERLAP_SECONDS = 60.0
+# Ollama's default context (~4k tokens) silently truncates the 600s/8-10k
+# token prompts used for hosted providers. Use much smaller windows for it.
+SMALL_CTX_WINDOW_SECONDS = 150.0
+SMALL_CTX_OVERLAP_SECONDS = 20.0
 MAX_CANDIDATES_PER_WINDOW = 6
 SNAP_WINDOW = 2.0
 MIN_GAP = 0.15
 PRE_ROLL = 0.3
 LLM_TIMEOUT = 90
+# Local models can be much slower than hosted APIs for a 2048-token JSON
+# completion, especially on large prompts; give Ollama more room.
+SMALL_CTX_TIMEOUT = 300
 LLM_MAX_TOKENS = 2048
 
 
@@ -105,6 +112,7 @@ def _format_window(window: list[dict]) -> str:
 
 def _candidates_for_window(
     window: list[dict], llm, min_dur: float, max_dur: float, log_fn=None,
+    timeout: int = LLM_TIMEOUT,
 ) -> list[Moment]:
     prompt = _CANDIDATE_PROMPT.format(
         max_candidates=MAX_CANDIDATES_PER_WINDOW,
@@ -113,7 +121,7 @@ def _candidates_for_window(
     )
     if log_fn:
         log_fn(f"Window prompt ~{len(prompt) // 4} tokens")
-    raw = _llm_json(llm, prompt, list, log_fn)
+    raw = _llm_json(llm, prompt, list, log_fn, timeout=timeout)
     if raw is None:
         return []
 
@@ -176,12 +184,12 @@ Return ONLY a JSON array:
 [{{"index": int, "caption": "..."}}]"""
 
 
-def _llm_json(llm, prompt: str, kind: type, log_fn=None):
+def _llm_json(llm, prompt: str, kind: type, log_fn=None, timeout: int = LLM_TIMEOUT):
     """One LLM call with a single stricter retry; returns parsed JSON or None."""
     for attempt, p in enumerate([prompt, prompt + _RETRY_SUFFIX]):
         try:
             return _extract_json(
-                llm.complete(p, max_tokens=LLM_MAX_TOKENS, timeout=LLM_TIMEOUT), kind)
+                llm.complete(p, max_tokens=LLM_MAX_TOKENS, timeout=timeout), kind)
         except Exception as e:
             if log_fn:
                 log_fn(f"LLM JSON call attempt {attempt + 1} failed: {e}")
@@ -189,7 +197,8 @@ def _llm_json(llm, prompt: str, kind: type, log_fn=None):
 
 
 def _rank_and_caption(candidates: list[Moment], llm, count: int, log_fn=None,
-                      transcript: list[dict] | None = None) -> list[Moment]:
+                      transcript: list[dict] | None = None,
+                      timeout: int = LLM_TIMEOUT) -> list[Moment]:
     """Pick the top `count` candidates via one ranking call, then generate
     captions for only the winners. Falls back to score order if ranking
     fails; captions stay empty if caption generation fails."""
@@ -198,7 +207,7 @@ def _rank_and_caption(candidates: list[Moment], llm, count: int, log_fn=None,
         for i, m in enumerate(candidates)
     ]
     parsed = _llm_json(llm, _RANKING_PROMPT.format(count=count, candidates="\n".join(lines)),
-                       dict, log_fn)
+                       dict, log_fn, timeout=timeout)
     order: list[int] = []
     if parsed and isinstance(parsed.get("top"), list):
         for i in parsed["top"]:
@@ -228,7 +237,7 @@ def _rank_and_caption(candidates: list[Moment], llm, count: int, log_fn=None,
                 line += "\n   Excerpt: " + " ".join(excerpt)
         clip_lines.append(line)
     captions = _llm_json(llm, _CAPTION_PROMPT.format(clips="\n".join(clip_lines)),
-                         list, log_fn)
+                         list, log_fn, timeout=timeout)
     if captions:
         for entry in captions:
             try:
@@ -278,25 +287,31 @@ def find_best_moments(
     max_dur: float = 90.0,
     log_fn=None,
     cancel_check=None,
+    window_seconds: float = WINDOW_SECONDS,
+    overlap_seconds: float = OVERLAP_SECONDS,
 ) -> list[Moment]:
     """Two-pass LLM moment selection. Returns winners in rank order
     (best first), boundaries snapped. Raises MomentsError if nothing
     viable is found.
 
     cancel_check: optional zero-arg callable returning True to abort;
-    checked between LLM calls (each can take up to 90s). Raises
+    checked between LLM calls (each can take up to 90s, or up to
+    SMALL_CTX_TIMEOUT for local Ollama models). Raises
     MomentsError("Cancelled by user.") when it fires."""
     def _check_cancel():
         if cancel_check is not None and cancel_check():
             raise MomentsError("Cancelled by user.")
 
-    windows = chunk_transcript(transcript)
+    timeout = SMALL_CTX_TIMEOUT if getattr(llm, "provider", "") == "ollama" else LLM_TIMEOUT
+
+    windows = chunk_transcript(transcript, window_seconds=window_seconds,
+                               overlap_seconds=overlap_seconds)
     if log_fn:
         log_fn(f"Scanning {len(windows)} transcript window(s) for viral moments...")
     candidates: list[Moment] = []
     for wi, window in enumerate(windows, 1):
         _check_cancel()
-        found = _candidates_for_window(window, llm, min_dur, max_dur, log_fn)
+        found = _candidates_for_window(window, llm, min_dur, max_dur, log_fn, timeout=timeout)
         if log_fn:
             log_fn(f"Window {wi}/{len(windows)}: {len(found)} candidate(s)")
         candidates.extend(found)
@@ -311,7 +326,8 @@ def find_best_moments(
     candidates = dedupe_candidates(candidates)
     if log_fn:
         log_fn(f"{len(candidates)} candidates after dedup; ranking...")
-    winners = _rank_and_caption(candidates, llm, count, log_fn, transcript=transcript)
+    winners = _rank_and_caption(candidates, llm, count, log_fn, transcript=transcript,
+                                timeout=timeout)
     for m in winners:
         s, e = snap_moment(m.start, m.end, transcript)
         # Keep the snap only if it doesn't push the clip outside the

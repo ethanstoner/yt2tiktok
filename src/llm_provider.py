@@ -51,12 +51,28 @@ class LLMProvider:
     def __init__(self, provider: str, api_key: str = "", model: str = "", base_url: str = ""):
         self.provider = provider.lower()
         info = PROVIDERS.get(self.provider, {})
-        self.base_url = base_url or info.get("base_url", "")
-        self.model = model or info.get("default_model", "")
+        if base_url:
+            self.base_url = base_url
+        elif self.provider == "ollama":
+            # Ollama's default port varies by install; probe common ports
+            # cheaply (connection-refused fails in ms) before giving up
+            # and falling back to the static default.
+            self.base_url = detect_ollama_url() or info.get("base_url", "")
+        else:
+            self.base_url = info.get("base_url", "")
         self.api_key = api_key
         self.format = info.get("format", "openai")
         if provider.lower() == "custom":
             self.format = "openai"
+        if not model and self.provider == "ollama":
+            # No model explicitly configured: prefer whatever is actually
+            # installed over the hardcoded default. list_models() already
+            # degrades gracefully (returns the static default) if Ollama
+            # is unreachable, so this never breaks construction.
+            installed = self.list_models()
+            self.model = installed[0] if installed else info.get("default_model", "")
+        else:
+            self.model = model or info.get("default_model", "")
 
     def is_available(self) -> bool:
         if self.provider == "ollama":

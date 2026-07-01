@@ -74,16 +74,19 @@ from src.moments import _candidates_for_window
 
 
 class FakeLLM:
-    """Returns queued responses in order; records prompts."""
-    def __init__(self, responses):
+    """Returns queued responses in order; records prompts and call kwargs."""
+    def __init__(self, responses, provider=""):
         self.responses = list(responses)
         self.prompts = []
+        self.calls = []
+        self.provider = provider
 
     def is_available(self):
         return True
 
     def complete(self, prompt, max_tokens=256, timeout=30):
         self.prompts.append(prompt)
+        self.calls.append({"max_tokens": max_tokens, "timeout": timeout})
         if not self.responses:
             raise AssertionError("FakeLLM ran out of responses")
         return self.responses.pop(0)
@@ -438,3 +441,100 @@ class TestCancellation:
             compute_best_moments_cuts(tr, llm, 2, 20.0, 90.0, None,
                                       cancel_check=lambda: True)
         assert llm.prompts == []
+
+
+from src.moments import SMALL_CTX_TIMEOUT, SMALL_CTX_WINDOW_SECONDS, SMALL_CTX_OVERLAP_SECONDS, LLM_TIMEOUT
+
+
+class TestWindowPassthrough:
+    def test_smaller_window_scans_more_windows(self):
+        tr = make_transcript(300)  # 5 min
+        # Default (600/60) window: single window, single candidate-pass call.
+        llm_default = FakeLLM([
+            '[{"start_idx": 20, "end_idx": 55, "score": 85, "hook_title": "Hook A", "reason": "ra"}]',
+            '{"top": [0]}',
+            '[{"index": 0, "caption": "capA"}]',
+        ])
+        find_best_moments(tr, llm_default, count=1, min_dur=20.0, max_dur=90.0)
+        default_window_calls = sum(1 for c in llm_default.calls) - 2  # minus ranking+caption
+        assert default_window_calls == 1
+
+        # Small-ctx (150/20) window: 3 windows scanned for the same transcript.
+        llm_small = FakeLLM([
+            '[{"start_idx": 20, "end_idx": 55, "score": 85, "hook_title": "Hook A", "reason": "ra"}]',
+            "[]",
+            "[]",
+            '{"top": [0]}',
+            '[{"index": 0, "caption": "capA"}]',
+        ])
+        find_best_moments(tr, llm_small, count=1, min_dur=20.0, max_dur=90.0,
+                          window_seconds=SMALL_CTX_WINDOW_SECONDS,
+                          overlap_seconds=SMALL_CTX_OVERLAP_SECONDS)
+        small_window_calls = len(llm_small.calls) - 2  # minus ranking+caption
+        assert small_window_calls == 3
+        assert small_window_calls > default_window_calls
+
+
+class TestProviderAwareTimeout:
+    def test_ollama_llm_gets_small_ctx_timeout(self):
+        tr = make_transcript(300)
+        llm = FakeLLM([
+            '[{"start_idx": 20, "end_idx": 55, "score": 85, "hook_title": "Hook A", "reason": "ra"}]',
+            '{"top": [0]}',
+            '[{"index": 0, "caption": "capA"}]',
+        ], provider="ollama")
+        find_best_moments(tr, llm, count=1, min_dur=20.0, max_dur=90.0)
+        assert all(c["timeout"] == SMALL_CTX_TIMEOUT for c in llm.calls)
+
+    def test_non_ollama_llm_gets_default_timeout(self):
+        tr = make_transcript(300)
+        llm = FakeLLM([
+            '[{"start_idx": 20, "end_idx": 55, "score": 85, "hook_title": "Hook A", "reason": "ra"}]',
+            '{"top": [0]}',
+            '[{"index": 0, "caption": "capA"}]',
+        ], provider="groq")
+        find_best_moments(tr, llm, count=1, min_dur=20.0, max_dur=90.0)
+        assert all(c["timeout"] == LLM_TIMEOUT for c in llm.calls)
+
+
+class TestComputeBestMomentsCutsWindowSelection:
+    def _llm(self, provider=""):
+        return FakeLLM([
+            '[{"start_idx": 20, "end_idx": 55, "score": 85, "hook_title": "Hook A", "reason": "ra"},'
+            ' {"start_idx": 150, "end_idx": 190, "score": 70, "hook_title": "Hook B", "reason": "rb"}]',
+            '{"top": [0, 1]}',
+            '[{"index": 0, "caption": "capA"}, {"index": 1, "caption": "capB"}]',
+        ], provider=provider)
+
+    def test_ollama_provider_uses_small_ctx_windows(self, monkeypatch):
+        import src.workers as workers_mod
+        captured = {}
+
+        def fake_find_best_moments(transcript, llm, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr(workers_mod.moments_mod, "find_best_moments", fake_find_best_moments)
+        tr = make_transcript(300)
+        # fake_find_best_moments returns [] -> compute_best_moments_cuts
+        # handles that fine (empty cuts/overlay_map); we only care about
+        # the kwargs find_best_moments was invoked with.
+        workers_mod.compute_best_moments_cuts(
+            tr, self._llm(provider="ollama"), 2, 20.0, 90.0, None)
+        assert captured["window_seconds"] == SMALL_CTX_WINDOW_SECONDS
+        assert captured["overlap_seconds"] == SMALL_CTX_OVERLAP_SECONDS
+
+    def test_non_ollama_provider_uses_default_windows(self, monkeypatch):
+        import src.workers as workers_mod
+        captured = {}
+
+        def fake_find_best_moments(transcript, llm, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr(workers_mod.moments_mod, "find_best_moments", fake_find_best_moments)
+        tr = make_transcript(300)
+        workers_mod.compute_best_moments_cuts(
+            tr, self._llm(provider="groq"), 2, 20.0, 90.0, None)
+        assert captured["window_seconds"] == 600.0
+        assert captured["overlap_seconds"] == 60.0
