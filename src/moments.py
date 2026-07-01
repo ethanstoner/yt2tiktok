@@ -109,15 +109,7 @@ def _candidates_for_window(
         min_dur=min_dur, max_dur=max_dur,
         words=_format_window(window),
     )
-    raw = None
-    for attempt, p in enumerate([prompt, prompt + _RETRY_SUFFIX]):
-        try:
-            response = llm.complete(p, max_tokens=LLM_MAX_TOKENS, timeout=LLM_TIMEOUT)
-            raw = _extract_json(response, list)
-            break
-        except Exception as e:
-            if log_fn:
-                log_fn(f"Moment candidate pass attempt {attempt + 1} failed: {e}")
+    raw = _llm_json(llm, prompt, list, log_fn)
     if raw is None:
         return []
 
@@ -161,3 +153,69 @@ def dedupe_candidates(candidates: list[Moment]) -> list[Moment]:
         if not clash:
             survivors.append(cand)
     return sorted(survivors, key=lambda m: m.start)
+
+
+_RANKING_PROMPT = """You are picking the {count} best short-form clips to sell to a YouTuber from these candidate moments.
+
+Candidates:
+{candidates}
+
+Rank by: hook strength in the first 3 seconds, emotional payoff, and whether the moment is fully self-contained (no missing context). Return ONLY JSON, best first:
+{{"top": [candidate indices]}}"""
+
+_CAPTION_PROMPT = """Write a TikTok/YouTube Shorts post caption for each clip below: 1-2 punchy sentences that create curiosity, then 3-5 relevant hashtags.
+
+Clips:
+{clips}
+
+Return ONLY a JSON array:
+[{{"index": int, "caption": "..."}}]"""
+
+
+def _llm_json(llm, prompt: str, kind: type, log_fn=None):
+    """One LLM call with a single stricter retry; returns parsed JSON or None."""
+    for attempt, p in enumerate([prompt, prompt + _RETRY_SUFFIX]):
+        try:
+            return _extract_json(
+                llm.complete(p, max_tokens=LLM_MAX_TOKENS, timeout=LLM_TIMEOUT), kind)
+        except Exception as e:
+            if log_fn:
+                log_fn(f"LLM JSON call attempt {attempt + 1} failed: {e}")
+    return None
+
+
+def _rank_and_caption(candidates: list[Moment], llm, count: int, log_fn=None) -> list[Moment]:
+    """Pick the top `count` candidates via one ranking call, then generate
+    captions for only the winners. Falls back to score order if ranking
+    fails; captions stay empty if caption generation fails."""
+    lines = [
+        f'{i}. [score {m.score}, {m.end - m.start:.0f}s] "{m.hook_title}" — {m.reason}'
+        for i, m in enumerate(candidates)
+    ]
+    parsed = _llm_json(llm, _RANKING_PROMPT.format(count=count, candidates="\n".join(lines)),
+                       dict, log_fn)
+    order: list[int] = []
+    if parsed and isinstance(parsed.get("top"), list):
+        for i in parsed["top"]:
+            if isinstance(i, int) and 0 <= i < len(candidates) and i not in order:
+                order.append(i)
+    if not order:
+        if log_fn:
+            log_fn("Ranking pass failed; falling back to score order.")
+        order = sorted(range(len(candidates)), key=lambda i: -candidates[i].score)
+    winners = [candidates[i] for i in order[:count]]
+
+    clip_lines = [
+        f'{i}. "{m.hook_title}" — {m.reason}' for i, m in enumerate(winners)
+    ]
+    captions = _llm_json(llm, _CAPTION_PROMPT.format(clips="\n".join(clip_lines)),
+                         list, log_fn)
+    if captions:
+        for entry in captions:
+            try:
+                idx, text = int(entry["index"]), str(entry["caption"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if 0 <= idx < len(winners):
+                winners[idx].caption = text
+    return winners

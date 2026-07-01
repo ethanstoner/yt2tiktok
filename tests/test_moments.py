@@ -152,3 +152,51 @@ class TestDedupe:
         a = Moment(start=10.0, end=40.0, score=90, hook_title="A", reason="")
         b = Moment(start=100.0, end=130.0, score=60, hook_title="B", reason="")
         assert len(dedupe_candidates([a, b])) == 2
+
+
+from src.moments import _rank_and_caption
+
+
+def _three_candidates():
+    return [
+        Moment(start=10.0, end=40.0, score=70, hook_title="A", reason="ra"),
+        Moment(start=100.0, end=140.0, score=90, hook_title="B", reason="rb"),
+        Moment(start=200.0, end=230.0, score=50, hook_title="C", reason="rc"),
+    ]
+
+
+class TestRankAndCaption:
+    def test_top_n_selected_in_rank_order(self):
+        llm = FakeLLM([
+            '{"top": [1, 0]}',
+            '[{"index": 0, "caption": "cap B #x"}, {"index": 1, "caption": "cap A #y"}]',
+        ])
+        winners = _rank_and_caption(_three_candidates(), llm, count=2)
+        assert [m.hook_title for m in winners] == ["B", "A"]
+        assert winners[0].caption == "cap B #x"
+        assert winners[1].caption == "cap A #y"
+
+    def test_ranking_failure_falls_back_to_score_order(self):
+        llm = FakeLLM(["garbage", "still garbage",
+                       '[{"index": 0, "caption": "c1"}, {"index": 1, "caption": "c2"}]'])
+        winners = _rank_and_caption(_three_candidates(), llm, count=2)
+        # Fallback: sort by score desc → B(90), A(70)
+        assert [m.hook_title for m in winners] == ["B", "A"]
+
+    def test_caption_failure_leaves_captions_empty(self):
+        llm = FakeLLM(['{"top": [1, 0]}', "garbage", "still garbage"])
+        winners = _rank_and_caption(_three_candidates(), llm, count=2)
+        assert [m.hook_title for m in winners] == ["B", "A"]
+        assert all(m.caption == "" for m in winners)
+
+    def test_fewer_candidates_than_count(self):
+        llm = FakeLLM(['{"top": [0]}', '[{"index": 0, "caption": "c"}]'])
+        cands = [Moment(start=1.0, end=31.0, score=60, hook_title="only", reason="r")]
+        winners = _rank_and_caption(cands, llm, count=5)
+        assert len(winners) == 1
+
+    def test_invalid_indices_ignored(self):
+        llm = FakeLLM(['{"top": [99, 1, 1, 0]}',
+                       '[{"index": 0, "caption": "c1"}, {"index": 1, "caption": "c2"}]'])
+        winners = _rank_and_caption(_three_candidates(), llm, count=2)
+        assert [m.hook_title for m in winners] == ["B", "A"]
