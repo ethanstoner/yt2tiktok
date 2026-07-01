@@ -29,9 +29,13 @@ class AppState:
         self.caption_y = ctk.DoubleVar(value=cfg.get_number("caption_y", float))
         self.transcription_status = ctk.StringVar(value="")
         self.keep_source_video = ctk.BooleanVar(value=cfg.get("keep_source_video"))
-        self.moments_count = ctk.IntVar(value=cfg.get_number("moments_count", int))
-        self.moments_min_dur = ctk.IntVar(value=cfg.get_number("moments_min_dur", int))
-        self.moments_max_dur = ctk.IntVar(value=cfg.get_number("moments_max_dur", int))
+        # Moments settings are StringVars (parsed at submit in ClipTab):
+        # an IntVar bound to a CTkEntry spams TclError tracebacks whenever
+        # the field is momentarily empty while retyping. get_number still
+        # guards against malformed config values at startup.
+        self.moments_count = ctk.StringVar(value=str(cfg.get_number("moments_count", int)))
+        self.moments_min_dur = ctk.StringVar(value=str(cfg.get_number("moments_min_dur", int)))
+        self.moments_max_dur = ctk.StringVar(value=str(cfg.get_number("moments_max_dur", int)))
 
         # Upload tab
         self.tk_cookie = ctk.StringVar(value=uploader.load_last_cookie_path())
@@ -136,8 +140,8 @@ class AppState:
             _set(self.llm_model, cfg.get("llm_model"), str)
             _set(self.llm_base_url, cfg.get("llm_base_url"), str)
             _set(self.keep_source_video, cfg.get("keep_source_video"), bool)
-            _set(self.moments_count, cfg.get("moments_count"), int)
-            _set(self.moments_min_dur, cfg.get("moments_min_dur"), int)
-            _set(self.moments_max_dur, cfg.get("moments_max_dur"), int)
+            _set(self.moments_count, cfg.get("moments_count"), str)
+            _set(self.moments_min_dur, cfg.get("moments_min_dur"), str)
+            _set(self.moments_max_dur, cfg.get("moments_max_dur"), str)
         finally:
             self._initializing = False

@@ -1,7 +1,7 @@
 import os
 import threading
 import customtkinter as ctk
-from tkinter import messagebox, TclError
+from tkinter import messagebox
 from PIL import Image
 
 from src import clipper
@@ -104,7 +104,9 @@ class ClipTab:
         # --- Best Moments options (visible only in that mode) ---
         self.opts_frame = opts_frame
         self.moments_frame = ctk.CTkFrame(scroll, fg_color="transparent")
-        ctk.CTkLabel(self.moments_frame, text="Clips to make").pack(side="left")
+        moments_label = ctk.CTkLabel(self.moments_frame, text="Clips to make")
+        moments_label.pack(side="left")
+        Tooltip(moments_label, "How many top moments to extract\nMin/Max: allowed clip length in seconds")
         ctk.CTkEntry(self.moments_frame, textvariable=state.moments_count, width=50).pack(side="left", padx=(SP_4, SP_12))
         ctk.CTkLabel(self.moments_frame, text="Min (s)").pack(side="left")
         ctk.CTkEntry(self.moments_frame, textvariable=state.moments_min_dur, width=50).pack(side="left", padx=(SP_4, SP_12))
@@ -347,7 +349,7 @@ class ClipTab:
                 moments_max = int(self.state.moments_max_dur.get())
                 if moments_count < 1 or moments_min < 5 or moments_max <= moments_min:
                     raise ValueError
-            except (ValueError, TypeError, TclError):
+            except (ValueError, TypeError):
                 messagebox.showerror(
                     "Invalid Settings",
                     "Check Best Moments settings: clips ≥ 1, min ≥ 5s, max > min.")
