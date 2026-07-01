@@ -101,6 +101,15 @@ def get(key: str, default=_UNSET):
     return config.get(key, DEFAULTS.get(key))
 
 
+def get_number(key: str, caster):
+    """Read a numeric config value, falling back to the default when the
+    stored value is malformed (hand-edited config files happen)."""
+    try:
+        return caster(get(key))
+    except (TypeError, ValueError):
+        return caster(DEFAULTS[key])
+
+
 def set(key: str, value):
     save_config({key: value})
 

@@ -24,12 +24,14 @@ class AppState:
         self.cut_mode = ctk.StringVar(value=cfg.get("cut_mode"))
         self.captions_enabled = ctk.BooleanVar(value=cfg.get("captions_enabled"))
         self.preset = ctk.StringVar(value=cfg.get("preset"))
-        self.caption_y = ctk.DoubleVar(value=cfg.get("caption_y"))
+        # Numeric vars use get_number: a malformed value in a hand-edited
+        # config file would otherwise raise TclError and crash startup.
+        self.caption_y = ctk.DoubleVar(value=cfg.get_number("caption_y", float))
         self.transcription_status = ctk.StringVar(value="")
         self.keep_source_video = ctk.BooleanVar(value=cfg.get("keep_source_video"))
-        self.moments_count = ctk.IntVar(value=cfg.get("moments_count"))
-        self.moments_min_dur = ctk.IntVar(value=cfg.get("moments_min_dur"))
-        self.moments_max_dur = ctk.IntVar(value=cfg.get("moments_max_dur"))
+        self.moments_count = ctk.IntVar(value=cfg.get_number("moments_count", int))
+        self.moments_min_dur = ctk.IntVar(value=cfg.get_number("moments_min_dur", int))
+        self.moments_max_dur = ctk.IntVar(value=cfg.get_number("moments_max_dur", int))
 
         # Upload tab
         self.tk_cookie = ctk.StringVar(value=uploader.load_last_cookie_path())

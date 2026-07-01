@@ -81,7 +81,18 @@ class TestConfig:
         assert cfg.get("caption_template") == "{title} 🔥 Part {part}"
 
     def test_moments_defaults(self):
-        from src import config
-        assert config.DEFAULTS["moments_count"] == 5
-        assert config.DEFAULTS["moments_min_dur"] == 20
-        assert config.DEFAULTS["moments_max_dur"] == 90
+        assert cfg.DEFAULTS["moments_count"] == 5
+        assert cfg.DEFAULTS["moments_min_dur"] == 20
+        assert cfg.DEFAULTS["moments_max_dur"] == 90
+
+    def test_get_number_valid_and_coerced(self, temp_config):
+        cfg.set("moments_count", 7)
+        assert cfg.get_number("moments_count", int) == 7
+        cfg.set("moments_count", "8")  # numeric string coerces
+        assert cfg.get_number("moments_count", int) == 8
+
+    def test_get_number_falls_back_on_malformed(self, temp_config):
+        cfg.set("moments_count", "abc")
+        assert cfg.get_number("moments_count", int) == 5
+        cfg.set("caption_y", None)
+        assert cfg.get_number("caption_y", float) == 0.73
