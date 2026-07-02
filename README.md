@@ -14,6 +14,7 @@ Built with CustomTkinter for a modern dark-themed interface.
 
 - **YouTube Download** -- Paste any YouTube URL to download via yt-dlp (1080p max, MP4)
 - **Smart Clipping** -- Splits videos into 60-70s segments using Natural Pause (silence-based) or Cliffhanger (LLM hook point) cut modes
+- **Best Moments Finder** -- An LLM scores the whole transcript and extracts only the top N viral-worthy moments (dynamic 20-90s clips) with hook-title overlays, plus client-ready deliverables: `report.md` and `moments.json` with virality scores, reasons, and ready-to-paste captions
 - **Blurred Background** -- 9:16 vertical clips with a blurred, zoomed copy of the video as the background
 - **GPU Acceleration** -- NVENC hardware encoding with automatic CPU (libx264) fallback
 - **Parallel Encoding** -- Clips encode concurrently (2-4x faster on multi-core machines)
@@ -21,7 +22,7 @@ Built with CustomTkinter for a modern dark-themed interface.
 - **6 Caption Style Presets** -- Opus Clean, Bold Pop, Neon Glow, Impact, Pastel, and Minimal
 - **Width-Adaptive Phrases** -- Caption grouping based on actual text width, not word count; single-word orphans are always merged into neighbors
 - **Hybrid Transcription** -- YouTube captions (instant, accurate) with automatic whisper fill-in for censored words; falls back to local faster-whisper (large-v3-turbo > medium > base) when captions are unavailable
-- **Uncensored Captions** -- Detects YouTube's profanity censorship and fills censored words using local whisper so captions match what's actually said
+- **Uncensored Captions** -- Detects YouTube's profanity censorship and fills censored words using local whisper so captions match what's actually said. Only the few seconds of audio around each censored word are transcribed (merged windows, one model load) -- not the whole video
 - **Per-Clip Keyword Highlighting** -- LLM-driven keyword detection per clip highlights impactful words in green; falls back to heuristic when no LLM is configured
 - **Centralized Config** -- All settings persist to `~/.yt2tiktok.json` with thread-safe reads and writes
 
@@ -34,7 +35,7 @@ Implemented and being hardened (polish and edge-case verification in progress):
 - [ ] **TikTok Upload** -- Selenium-driven uploads with cookie auth, scheduling, quiet hours, retry logic
 - [ ] **Black Bars Mode** -- Letterboxed 9:16 with solid black padding (alternative to blurred)
 - [ ] **Long Video Guard** -- Warning dialog for videos over 2 hours
-- [ ] **Multi-Provider LLM** -- OpenAI, Gemini, Claude, Ollama support (only Groq tested so far)
+- [ ] **Multi-Provider LLM** -- OpenAI, Gemini, Claude support (Groq and Ollama tested so far)
 - [ ] **Caption Templates** -- `{title}`, `{part}`, `{total}` placeholders for TikTok post captions
 
 ## Caption Presets
@@ -113,13 +114,26 @@ YouTube URL ──> yt-dlp download
 1. Provide a YouTube URL or local MP4 file.
 2. The app fetches YouTube captions instantly (or runs whisper locally for local files).
 3. Censored words are automatically detected and filled in via whisper.
-4. Choose a cut mode: **Natural Pause** finds silence-based boundaries; **Cliffhanger** uses an LLM to pick a hook point mid-sentence.
+4. Choose a cut mode: **Natural Pause** finds silence-based boundaries; **Cliffhanger** uses an LLM to pick a hook point mid-sentence; **Best Moments** has an LLM pick only the top clips (see below).
 5. Clips are encoded in parallel with blurred 9:16 background and karaoke captions burned in.
 6. Output saved to `./clips/<video-title>/`.
 
+### Best Moments Mode
+
+Instead of chopping the whole video into sequential parts, Best Moments scans the transcript in overlapping windows, has the LLM score candidate moments for virality, deduplicates and ranks them, and renders only the top N (default 5) as clips of dynamic length (20-90s, configurable). Clip boundaries snap to natural silence gaps so hooks are never cut off mid-word.
+
+Each run also writes client-ready deliverables next to the clips:
+
+- `report.md` -- a human-readable summary with each moment's virality score, why it was picked, and its suggested caption
+- `moments.json` -- the same data in machine-readable form
+
+Clips get the LLM's hook title as a top-bar overlay instead of a "Part N" label. Requires a configured LLM (see below). With Ollama, the app automatically uses smaller transcript windows and longer timeouts to suit local models -- a model with a larger context window (e.g. `qwen3-coder:30b`) gives noticeably better picks than small 4k-context models.
+
 ## LLM Setup (Optional)
 
-LLM integration enables two features: **keyword highlighting** (picks the most impactful words to color in captions) and **Cliffhanger cut mode** (selects a hook point within each segment).
+LLM integration enables three features: **keyword highlighting** (picks the most impactful words to color in captions), **Cliffhanger cut mode** (selects a hook point within each segment), and **Best Moments mode** (scores and extracts the top viral-worthy clips).
+
+For Ollama, the base URL is auto-detected across common ports (11434-11436), and leaving the model blank uses whatever model you have installed.
 
 Open the **LLM Settings** panel in the app and configure:
 
@@ -166,6 +180,7 @@ yt2tiktok/
 │   ├── clipper.py             # YouTube download, FFmpeg splitting, parallel encoding
 │   ├── uploader.py            # TikTok cookie auth, Selenium upload, scheduling (untested)
 │   ├── transcriber.py         # Hybrid YouTube captions + whisper fallback
+│   ├── moments.py             # Best Moments: two-pass LLM viral moment selection
 │   ├── captioner.py           # ASS subtitle generation, 6 presets, keyword detection
 │   ├── llm_provider.py        # Multi-provider LLM client (Groq, OpenAI, Gemini, Claude, Ollama)
 │   ├── preview.py             # Caption preview window with drag-to-reposition
