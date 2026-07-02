@@ -88,6 +88,15 @@ class TestOllamaModelFallback:
             LLMProvider("groq", api_key="k")
         list_models.assert_not_called()
 
+    def test_detect_failure_skips_model_probe(self):
+        # If the port probe already said Ollama is down, asking it for
+        # installed models is pointless network I/O on the UI thread.
+        with patch("src.llm_provider.detect_ollama_url", return_value=None), \
+             patch.object(LLMProvider, "list_models") as list_models:
+            llm = LLMProvider("ollama")
+        list_models.assert_not_called()
+        assert llm.model == "llama3.1:8b"
+
     def test_construction_survives_ollama_down(self):
         # detect_ollama_url returns None (nothing listening) and
         # list_models's real implementation swallows connection errors,
