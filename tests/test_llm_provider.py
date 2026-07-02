@@ -2,7 +2,7 @@ from unittest.mock import patch, MagicMock
 
 from requests.exceptions import ConnectionError
 
-from src.llm_provider import LLMProvider
+from src.llm_provider import LLMProvider, detect_ollama_url
 
 
 def _fake_response():
@@ -97,3 +97,34 @@ class TestOllamaModelFallback:
             llm = LLMProvider("ollama")
         assert llm.model == "llama3.1:8b"
         assert llm.base_url == "http://localhost:11434/v1"
+
+
+class TestDetectOllamaUrlProbe:
+    """The probe must be fast enough to run on the UI thread: 127.0.0.1
+    (localhost resolves to ::1 first on Windows, doubling every timeout)
+    and a sub-second timeout per port."""
+
+    def test_probes_127_0_0_1_with_short_timeout(self):
+        recorded = []
+
+        class FakeResp:
+            status_code = 200
+
+        def fake_get(url, timeout=None):
+            recorded.append((url, timeout))
+            return FakeResp()
+
+        with patch("src.llm_provider.requests.get", side_effect=fake_get):
+            url = detect_ollama_url()
+
+        assert url == "http://127.0.0.1:11434/v1"
+        probe_url, timeout = recorded[0]
+        assert probe_url.startswith("http://127.0.0.1:")
+        assert timeout is not None and timeout <= 0.5
+
+    def test_unreachable_ports_return_none(self):
+        def fake_get(url, timeout=None):
+            raise OSError("connection refused")
+
+        with patch("src.llm_provider.requests.get", side_effect=fake_get):
+            assert detect_ollama_url() is None

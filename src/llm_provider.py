@@ -35,11 +35,16 @@ PROVIDERS = {
 
 
 def detect_ollama_url() -> str | None:
-    """Try common Ollama ports and return the first responding base URL."""
+    """Try common Ollama ports and return the first responding base URL.
+
+    Uses 127.0.0.1 (not localhost, which resolves to ::1 first on Windows
+    and doubles every timeout) and a sub-second timeout per port: a live
+    Ollama answers /api/tags in milliseconds, and this can get called on
+    the UI thread."""
     for port in [11434, 11435, 11436]:
-        url = f"http://localhost:{port}"
+        url = f"http://127.0.0.1:{port}"
         try:
-            r = requests.get(f"{url}/api/tags", timeout=2)
+            r = requests.get(f"{url}/api/tags", timeout=0.4)
             if r.status_code == 200:
                 return f"{url}/v1"
         except Exception:
@@ -55,8 +60,9 @@ class LLMProvider:
             self.base_url = base_url
         elif self.provider == "ollama":
             # Ollama's default port varies by install; probe common ports
-            # cheaply (connection-refused fails in ms) before giving up
-            # and falling back to the static default.
+            # (0.4s cap each — Windows drops closed localhost ports
+            # silently instead of refusing) before falling back to the
+            # static default.
             self.base_url = detect_ollama_url() or info.get("base_url", "")
         else:
             self.base_url = info.get("base_url", "")

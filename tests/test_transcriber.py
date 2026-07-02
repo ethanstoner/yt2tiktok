@@ -179,6 +179,62 @@ class TestWhisperCancel:
             )
 
 
+class TestEmptyTranscription:
+    def test_successful_worker_with_no_words_returns_empty_without_retry(
+            self, monkeypatch, tmp_path):
+        """A worker that exits 0 but hears no speech (bleeped/silent audio)
+        must not waste minutes loading two more models — smaller models
+        won't hear more."""
+        attempts = []
+
+        def fake_worker(cmd, cancel_check=None):
+            attempts.append(cmd[2])  # model name argv
+            out_path = cmd[-1]
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write("[[]]")
+            return 0, ""
+
+        monkeypatch.setattr(transcriber, "_run_whisper_worker", fake_worker)
+
+        audio = tmp_path / "a.wav"
+        audio.write_bytes(b"")
+
+        words = _transcribe_faster_whisper([(str(audio), 0.0)])
+
+        assert words == []
+        assert len(attempts) == 1
+
+    def test_unparseable_worker_output_tries_next_model(self, monkeypatch, tmp_path):
+        attempts = []
+
+        def fake_worker(cmd, cancel_check=None):
+            attempts.append(cmd[2])
+            with open(cmd[-1], "w", encoding="utf-8") as f:
+                f.write("not json")
+            return 0, ""
+
+        monkeypatch.setattr(transcriber, "_run_whisper_worker", fake_worker)
+
+        audio = tmp_path / "a.wav"
+        audio.write_bytes(b"")
+
+        with pytest.raises(TranscriptionError):
+            _transcribe_faster_whisper([(str(audio), 0.0)])
+        assert len(attempts) == len(transcriber._WHISPER_MODELS)
+
+
+    def test_full_video_empty_transcription_raises(self, monkeypatch):
+        monkeypatch.setattr(transcriber, "_extract_audio", lambda *a, **kw: "a.wav")
+        monkeypatch.setattr(transcriber, "_transcribe_parakeet",
+                            lambda *a, **kw: (_ for _ in ()).throw(Exception("skip")))
+        monkeypatch.setattr(transcriber, "_transcribe_faster_whisper",
+                            lambda *a, **kw: [])
+        monkeypatch.setattr(transcriber.os, "unlink", lambda p: None)
+
+        with pytest.raises(TranscriptionError):
+            transcriber.transcribe("video.mp4")
+
+
 class TestTranscribeCancelPropagation:
     def test_cancel_does_not_fall_back_to_full_transcription(self, monkeypatch):
         def fake_fetch(url, log_fn=None):

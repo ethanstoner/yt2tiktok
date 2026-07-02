@@ -475,8 +475,22 @@ class TestWindowPassthrough:
         assert small_window_calls > default_window_calls
 
 
-class TestProviderAwareTimeout:
-    def test_ollama_llm_gets_small_ctx_timeout(self):
+class TestTimeoutParam:
+    """Timeout is an explicit parameter (decided by the caller alongside
+    window size), not re-derived from llm.provider inside moments."""
+
+    def test_explicit_timeout_used_for_all_calls(self):
+        tr = make_transcript(300)
+        llm = FakeLLM([
+            '[{"start_idx": 20, "end_idx": 55, "score": 85, "hook_title": "Hook A", "reason": "ra"}]',
+            '{"top": [0]}',
+            '[{"index": 0, "caption": "capA"}]',
+        ], provider="ollama")
+        find_best_moments(tr, llm, count=1, min_dur=20.0, max_dur=90.0,
+                          timeout=SMALL_CTX_TIMEOUT)
+        assert all(c["timeout"] == SMALL_CTX_TIMEOUT for c in llm.calls)
+
+    def test_default_timeout_regardless_of_provider(self):
         tr = make_transcript(300)
         llm = FakeLLM([
             '[{"start_idx": 20, "end_idx": 55, "score": 85, "hook_title": "Hook A", "reason": "ra"}]',
@@ -484,17 +498,43 @@ class TestProviderAwareTimeout:
             '[{"index": 0, "caption": "capA"}]',
         ], provider="ollama")
         find_best_moments(tr, llm, count=1, min_dur=20.0, max_dur=90.0)
-        assert all(c["timeout"] == SMALL_CTX_TIMEOUT for c in llm.calls)
-
-    def test_non_ollama_llm_gets_default_timeout(self):
-        tr = make_transcript(300)
-        llm = FakeLLM([
-            '[{"start_idx": 20, "end_idx": 55, "score": 85, "hook_title": "Hook A", "reason": "ra"}]',
-            '{"top": [0]}',
-            '[{"index": 0, "caption": "capA"}]',
-        ], provider="groq")
-        find_best_moments(tr, llm, count=1, min_dur=20.0, max_dur=90.0)
         assert all(c["timeout"] == LLM_TIMEOUT for c in llm.calls)
+
+
+from src.moments import _rank_and_caption, RANK_MAX_CANDIDATES, RANK_MAX_TOKENS, LLM_MAX_TOKENS
+from src.moments import Moment
+
+
+class TestRankingPromptCap:
+    """Many small-context windows can yield dozens of candidates; the
+    ranking prompt must stay bounded or small Ollama contexts silently
+    truncate the instructions."""
+
+    def _many_candidates(self, n):
+        return [Moment(start=float(i * 100), end=float(i * 100 + 30),
+                       score=i, hook_title=f"Hook {i}", reason=f"r{i}")
+                for i in range(n)]
+
+    def test_ranking_prompt_only_includes_top_candidates_by_score(self):
+        cands = self._many_candidates(RANK_MAX_CANDIDATES + 10)
+        llm = FakeLLM(['{"top": [0]}', "[]"])
+        _rank_and_caption(cands, llm, count=1)
+        ranking_prompt = llm.prompts[0]
+        # highest-scoring candidate is in, lowest is cut
+        assert f"Hook {RANK_MAX_CANDIDATES + 9}" in ranking_prompt
+        assert '"Hook 0"' not in ranking_prompt
+        # exactly RANK_MAX_CANDIDATES numbered lines
+        n_lines = sum(1 for line in ranking_prompt.splitlines()
+                      if line.strip().startswith(tuple(f"{i}." for i in range(100))))
+        assert n_lines == RANK_MAX_CANDIDATES
+
+    def test_ranking_call_uses_small_max_tokens(self):
+        cands = self._many_candidates(5)
+        llm = FakeLLM(['{"top": [4]}', '[{"index": 0, "caption": "c"}]'])
+        winners = _rank_and_caption(cands, llm, count=1)
+        assert llm.calls[0]["max_tokens"] == RANK_MAX_TOKENS
+        assert llm.calls[1]["max_tokens"] == LLM_MAX_TOKENS
+        assert winners[0].hook_title == "Hook 4"
 
 
 class TestComputeBestMomentsCutsWindowSelection:
@@ -523,6 +563,7 @@ class TestComputeBestMomentsCutsWindowSelection:
             tr, self._llm(provider="ollama"), 2, 20.0, 90.0, None)
         assert captured["window_seconds"] == SMALL_CTX_WINDOW_SECONDS
         assert captured["overlap_seconds"] == SMALL_CTX_OVERLAP_SECONDS
+        assert captured["timeout"] == SMALL_CTX_TIMEOUT
 
     def test_non_ollama_provider_uses_default_windows(self, monkeypatch):
         import src.workers as workers_mod
@@ -538,3 +579,4 @@ class TestComputeBestMomentsCutsWindowSelection:
             tr, self._llm(provider="groq"), 2, 20.0, 90.0, None)
         assert captured["window_seconds"] == 600.0
         assert captured["overlap_seconds"] == 60.0
+        assert captured["timeout"] == LLM_TIMEOUT

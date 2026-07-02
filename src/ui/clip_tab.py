@@ -335,8 +335,11 @@ class ClipTab:
             return
         cut = self.state.cut_mode.get().lower().replace(" ", "_")
         moments_count = moments_min = moments_max = 0
+        # Build the provider once and reuse it in the worker args below:
+        # LLMProvider() for ollama probes ports/models over the network,
+        # and this runs on the tkinter main thread.
+        llm = self._get_llm()
         if cut == "best_moments":
-            llm = self._get_llm()
             if llm is None or not llm.is_available():
                 messagebox.showerror(
                     "LLM Required",
@@ -366,7 +369,7 @@ class ClipTab:
                 self.state.url.get().strip(), self.state.local_path.get().strip(),
                 self.state.yt_cookie.get().strip(), self.state.mode.get(), cut,
                 self.state.captions_enabled.get(), self.state.preset.get(), self.state.caption_y.get(),
-                self._get_llm(),
+                llm,
                 moments_count, moments_min, moments_max,
                 self.state, self.clip_btn, self.preview_btn, self.cancel_btn,
             ),

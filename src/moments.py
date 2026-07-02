@@ -22,6 +22,12 @@ LLM_TIMEOUT = 90
 # completion, especially on large prompts; give Ollama more room.
 SMALL_CTX_TIMEOUT = 300
 LLM_MAX_TOKENS = 2048
+# Many small windows can yield dozens of candidates; an unbounded ranking
+# prompt would blow past a 4k local context (which truncates the prompt
+# front, discarding the instructions). Rank only the top scorers, and keep
+# the completion small — {"top": [...]} needs ~50 tokens, not 2048.
+RANK_MAX_CANDIDATES = 30
+RANK_MAX_TOKENS = 256
 
 
 class MomentsError(Exception):
@@ -184,12 +190,13 @@ Return ONLY a JSON array:
 [{{"index": int, "caption": "..."}}]"""
 
 
-def _llm_json(llm, prompt: str, kind: type, log_fn=None, timeout: int = LLM_TIMEOUT):
+def _llm_json(llm, prompt: str, kind: type, log_fn=None, timeout: int = LLM_TIMEOUT,
+              max_tokens: int = LLM_MAX_TOKENS):
     """One LLM call with a single stricter retry; returns parsed JSON or None."""
     for attempt, p in enumerate([prompt, prompt + _RETRY_SUFFIX]):
         try:
             return _extract_json(
-                llm.complete(p, max_tokens=LLM_MAX_TOKENS, timeout=timeout), kind)
+                llm.complete(p, max_tokens=max_tokens, timeout=timeout), kind)
         except Exception as e:
             if log_fn:
                 log_fn(f"LLM JSON call attempt {attempt + 1} failed: {e}")
@@ -202,12 +209,17 @@ def _rank_and_caption(candidates: list[Moment], llm, count: int, log_fn=None,
     """Pick the top `count` candidates via one ranking call, then generate
     captions for only the winners. Falls back to score order if ranking
     fails; captions stay empty if caption generation fails."""
+    if len(candidates) > RANK_MAX_CANDIDATES:
+        if log_fn:
+            log_fn(f"Ranking only the top {RANK_MAX_CANDIDATES} of "
+                   f"{len(candidates)} candidates by score.")
+        candidates = sorted(candidates, key=lambda m: -m.score)[:RANK_MAX_CANDIDATES]
     lines = [
         f'{i}. [score {m.score}, {m.end - m.start:.0f}s] "{m.hook_title}" — {m.reason}'
         for i, m in enumerate(candidates)
     ]
     parsed = _llm_json(llm, _RANKING_PROMPT.format(count=count, candidates="\n".join(lines)),
-                       dict, log_fn, timeout=timeout)
+                       dict, log_fn, timeout=timeout, max_tokens=RANK_MAX_TOKENS)
     order: list[int] = []
     if parsed and isinstance(parsed.get("top"), list):
         for i in parsed["top"]:
@@ -289,20 +301,22 @@ def find_best_moments(
     cancel_check=None,
     window_seconds: float = WINDOW_SECONDS,
     overlap_seconds: float = OVERLAP_SECONDS,
+    timeout: int = LLM_TIMEOUT,
 ) -> list[Moment]:
     """Two-pass LLM moment selection. Returns winners in rank order
     (best first), boundaries snapped. Raises MomentsError if nothing
     viable is found.
 
+    The caller decides window size and per-call timeout together (small
+    windows + SMALL_CTX_TIMEOUT for local Ollama models); provider policy
+    lives in one place, not re-derived here.
+
     cancel_check: optional zero-arg callable returning True to abort;
-    checked between LLM calls (each can take up to 90s, or up to
-    SMALL_CTX_TIMEOUT for local Ollama models). Raises
-    MomentsError("Cancelled by user.") when it fires."""
+    checked between LLM calls (each can take up to `timeout` seconds).
+    Raises MomentsError("Cancelled by user.") when it fires."""
     def _check_cancel():
         if cancel_check is not None and cancel_check():
             raise MomentsError("Cancelled by user.")
-
-    timeout = SMALL_CTX_TIMEOUT if getattr(llm, "provider", "") == "ollama" else LLM_TIMEOUT
 
     windows = chunk_transcript(transcript, window_seconds=window_seconds,
                                overlap_seconds=overlap_seconds)
@@ -321,8 +335,9 @@ def find_best_moments(
             "The LLM found no viable moments. Try widening the duration "
             "range or check that the video has spoken content. If you are "
             "using a small-context local model (e.g. Ollama llama3.1:8b "
-            "with a 4k context), it may silently truncate the 10-minute "
-            "transcript windows — try a larger-context model.")
+            f"with a 4k context), it may silently truncate the "
+            f"{window_seconds:.0f}s transcript windows — try a "
+            "larger-context model.")
     candidates = dedupe_candidates(candidates)
     if log_fn:
         log_fn(f"{len(candidates)} candidates after dedup; ranking...")

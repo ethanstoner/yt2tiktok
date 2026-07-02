@@ -183,10 +183,18 @@ def _transcribe_faster_whisper(snippets: list[tuple[str, float]], log_fn=None,
                 )
 
                 if returncode == 0 and os.path.exists(out_file.name):
-                    with open(out_file.name, "r", encoding="utf-8") as f:
-                        results = json.load(f)
-                    words = _offset_words(results, offsets)
-                    if words:
+                    results = None
+                    try:
+                        with open(out_file.name, "r", encoding="utf-8") as f:
+                            results = json.load(f)
+                    except ValueError:
+                        pass  # corrupt output: treat as model failure below
+                    if isinstance(results, list):
+                        # Worker succeeded — return even if it heard no
+                        # words (bleeped/silent audio): a smaller model
+                        # won't hear more, so retrying just wastes two
+                        # model loads.
+                        words = _offset_words(results, offsets)
                         if log_fn:
                             log_fn(f"Transcribed {len(words)} words using {model_name}")
                         return words
@@ -432,6 +440,8 @@ def transcribe(video_path: str, url: str = None, log_fn=None,
 
         words = _transcribe_faster_whisper([(audio_path, 0.0)], log_fn,
                                            cancel_check=cancel_check)
+        if not words:
+            raise TranscriptionError("Transcription produced no words")
         return words
 
     finally:

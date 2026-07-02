@@ -52,18 +52,21 @@ def compute_best_moments_cuts(transcript, llm, count, min_dur, max_dur, log_fn,
     if getattr(llm, "provider", "") == "ollama":
         window_seconds = moments_mod.SMALL_CTX_WINDOW_SECONDS
         overlap_seconds = moments_mod.SMALL_CTX_OVERLAP_SECONDS
+        timeout = moments_mod.SMALL_CTX_TIMEOUT
         if log_fn:
             log_fn(f"Ollama provider detected; using small-context "
                     f"windows ({window_seconds:.0f}s) to avoid silent truncation.")
     else:
         window_seconds = moments_mod.WINDOW_SECONDS
         overlap_seconds = moments_mod.OVERLAP_SECONDS
+        timeout = moments_mod.LLM_TIMEOUT
         if log_fn:
             log_fn(f"Using default transcript windows ({window_seconds:.0f}s).")
     found = moments_mod.find_best_moments(
         transcript, llm, count=count, min_dur=float(min_dur),
         max_dur=float(max_dur), log_fn=log_fn, cancel_check=cancel_check,
-        window_seconds=window_seconds, overlap_seconds=overlap_seconds)
+        window_seconds=window_seconds, overlap_seconds=overlap_seconds,
+        timeout=timeout)
     cuts = [(m.start, m.end - m.start) for m in found]
     overlay_map = {i: m.hook_title for i, m in enumerate(found, 1)}
     return cuts, overlay_map, found
