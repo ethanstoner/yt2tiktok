@@ -124,7 +124,8 @@ def clipper_worker(
         if captions_enabled or cut_mode != "random":
             clip_btn.winfo_toplevel().after(0, lambda: state.transcription_status.set("Transcribing..."))
             try:
-                transcript = transcriber.transcribe(video_path, url=url if url else None, log_fn=log)
+                transcript = transcriber.transcribe(video_path, url=url if url else None,
+                                                    log_fn=log, cancel_check=is_cancelled)
                 word_count = len(transcript)
                 count_str = str(word_count)
                 status_str = f"{word_count} words detected"
@@ -133,6 +134,10 @@ def clipper_worker(
                     state.transcript_count.set(c)
                     preview_btn.configure(state="normal")
                 clip_btn.winfo_toplevel().after(0, _on_transcription_done)
+            except transcriber.TranscriptionCancelled:
+                log("Clipping cancelled.")
+                clip_btn.winfo_toplevel().after(0, lambda: state.transcription_status.set(""))
+                return
             except Exception as e:
                 log(f"Transcription failed: {e}")
                 clip_btn.winfo_toplevel().after(0, lambda: state.transcription_status.set("Transcription failed"))

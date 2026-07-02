@@ -4,15 +4,29 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 FFMPEG_CMD = shutil.which("ffmpeg")
 
 _WHISPER_MODELS = ["large-v3-turbo", "medium", "base"]
+_WHISPER_TIMEOUT = 600
+# Seconds of audio to grab on each side of a censored word so whisper
+# hears the surrounding sentence for context.
+SNIPPET_PAD = 4.0
 
 
 class TranscriptionError(Exception):
     pass
+
+
+class TranscriptionCancelled(TranscriptionError):
+    pass
+
+
+def _check_cancel(cancel_check):
+    if cancel_check and cancel_check():
+        raise TranscriptionCancelled("Cancelled by user.")
 
 
 def _extract_audio(video_path: str, log_fn=None) -> str:
@@ -34,35 +48,125 @@ def _extract_audio(video_path: str, log_fn=None) -> str:
     return tmp.name
 
 
+def _extract_audio_snippet(video_path: str, start: float, duration: float,
+                           log_fn=None) -> str:
+    """Extract a small span of audio instead of the whole track."""
+    if FFMPEG_CMD is None:
+        raise TranscriptionError("ffmpeg not found in PATH. Install FFmpeg.")
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp.close()
+    cmd = [
+        FFMPEG_CMD, "-y", "-ss", f"{start:.3f}", "-t", f"{duration:.3f}",
+        "-i", video_path,
+        "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+        tmp.name,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        os.unlink(tmp.name)
+        raise TranscriptionError(f"Audio snippet extraction failed: {result.stderr[:200]}")
+    return tmp.name
+
+
+def _merge_windows(starts: list[float], pad: float = SNIPPET_PAD) -> list[tuple[float, float]]:
+    """Turn censored-word timestamps into merged (start, end) audio windows."""
+    windows = []
+    for s in sorted(starts):
+        lo, hi = max(0.0, s - pad), s + pad
+        if windows and lo <= windows[-1][1]:
+            windows[-1] = (windows[-1][0], max(windows[-1][1], hi))
+        else:
+            windows.append((lo, hi))
+    return windows
+
+
+def _offset_words(word_lists: list[list[dict]], offsets: list[float]) -> list[dict]:
+    """Shift per-snippet whisper timestamps back into video time."""
+    words = []
+    for snippet_words, offset in zip(word_lists, offsets):
+        for w in snippet_words:
+            words.append({
+                "word": w["word"],
+                "start": round(w["start"] + offset, 3),
+                "end": round(w["end"] + offset, 3),
+                "confidence": w["confidence"],
+            })
+    return words
+
+
+# The worker takes a JSON manifest of audio paths so one subprocess (one
+# model load) can transcribe every snippet. It emits a list-of-lists in
+# manifest order; the parent shifts timestamps back to video time.
 _WORKER_SCRIPT = '''
 import json, sys
 from faster_whisper import WhisperModel
-model_name, audio_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+model_name, manifest_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(manifest_path, "r", encoding="utf-8") as f:
+    audio_paths = json.load(f)
 model = WhisperModel(model_name, device="auto", compute_type="auto")
-segments, _ = model.transcribe(audio_path, word_timestamps=True)
-words = []
-for seg in segments:
-    if seg.words:
-        for w in seg.words:
-            words.append({"word": w.word.strip(), "start": round(w.start, 3),
-                          "end": round(w.end, 3), "confidence": round(w.probability, 3)})
+results = []
+for audio_path in audio_paths:
+    segments, _ = model.transcribe(audio_path, word_timestamps=True)
+    words = []
+    for seg in segments:
+        if seg.words:
+            for w in seg.words:
+                words.append({"word": w.word.strip(), "start": round(w.start, 3),
+                              "end": round(w.end, 3), "confidence": round(w.probability, 3)})
+    results.append(words)
 with open(out_path, "w", encoding="utf-8") as f:
-    json.dump(words, f)
+    json.dump(results, f)
 '''
 
 
-def _transcribe_faster_whisper(audio_path: str, log_fn=None) -> list[dict]:
-    """Try whisper models largest-first in isolated subprocesses.
+def _run_whisper_worker(cmd: list[str], cancel_check=None):
+    """Run a whisper subprocess, killing it if the user cancels.
 
-    If a model OOMs, the subprocess dies but the parent survives
-    and tries the next smaller model.
+    Returns (returncode, stderr). Raises TranscriptionCancelled on cancel
+    and subprocess.TimeoutExpired past _WHISPER_TIMEOUT.
+    """
+    _check_cancel(cancel_check)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True)
+    deadline = time.monotonic() + _WHISPER_TIMEOUT
+    while True:
+        if cancel_check and cancel_check():
+            proc.kill()
+            proc.wait()
+            raise TranscriptionCancelled("Cancelled by user.")
+        try:
+            _, stderr = proc.communicate(timeout=0.5)
+            return proc.returncode, stderr
+        except subprocess.TimeoutExpired:
+            if time.monotonic() >= deadline:
+                proc.kill()
+                proc.wait()
+                raise
+
+
+def _transcribe_faster_whisper(snippets: list[tuple[str, float]], log_fn=None,
+                               cancel_check=None) -> list[dict]:
+    """Transcribe audio snippets, trying whisper models largest-first in
+    isolated subprocesses.
+
+    `snippets` is a list of (audio_path, video_time_offset) pairs — pass
+    [(full_audio, 0.0)] to transcribe a whole video. If a model OOMs, the
+    subprocess dies but the parent survives and tries the next smaller
+    model. cancel_check kills the running subprocess when it returns True.
     """
     python = sys.executable
+    offsets = [off for _, off in snippets]
+
     out_file = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
     out_file.close()
+    manifest_file = tempfile.NamedTemporaryFile(
+        suffix=".json", mode="w", delete=False, encoding="utf-8")
+    json.dump([path for path, _ in snippets], manifest_file)
+    manifest_file.close()
 
     try:
         for model_name in _WHISPER_MODELS:
+            _check_cancel(cancel_check)
             if log_fn:
                 log_fn(f"Trying faster-whisper ({model_name})...")
 
@@ -72,21 +176,23 @@ def _transcribe_faster_whisper(audio_path: str, log_fn=None) -> list[dict]:
             script_file.close()
 
             try:
-                result = subprocess.run(
-                    [python, script_file.name, model_name, audio_path, out_file.name],
-                    capture_output=True, text=True, timeout=600,
+                returncode, stderr = _run_whisper_worker(
+                    [python, script_file.name, model_name,
+                     manifest_file.name, out_file.name],
+                    cancel_check=cancel_check,
                 )
 
-                if result.returncode == 0 and os.path.exists(out_file.name):
+                if returncode == 0 and os.path.exists(out_file.name):
                     with open(out_file.name, "r", encoding="utf-8") as f:
-                        words = json.load(f)
+                        results = json.load(f)
+                    words = _offset_words(results, offsets)
                     if words:
                         if log_fn:
                             log_fn(f"Transcribed {len(words)} words using {model_name}")
                         return words
 
                 if log_fn:
-                    reason = result.stderr.strip()[-200:] if result.stderr else f"exit code {result.returncode}"
+                    reason = stderr.strip()[-200:] if stderr else f"exit code {returncode}"
                     log_fn(f"{model_name} failed ({reason}), trying smaller model...")
 
             except subprocess.TimeoutExpired:
@@ -100,10 +206,11 @@ def _transcribe_faster_whisper(audio_path: str, log_fn=None) -> list[dict]:
 
         raise TranscriptionError("All whisper models failed")
     finally:
-        try:
-            os.unlink(out_file.name)
-        except OSError:
-            pass
+        for p in (out_file.name, manifest_file.name):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 def _transcribe_parakeet(audio_path: str, log_fn=None) -> list[dict]:
@@ -221,24 +328,48 @@ def _fetch_youtube_captions(url: str, log_fn=None) -> list[dict]:
     return words, censored_count
 
 
-def _fill_censored_words(yt_words: list[dict], video_path: str, log_fn=None) -> list[dict]:
-    """Replace censored placeholders in YouTube captions with whisper transcriptions."""
+def _fill_censored_words(yt_words: list[dict], video_path: str, log_fn=None,
+                         cancel_check=None) -> list[dict]:
+    """Replace censored placeholders in YouTube captions with whisper transcriptions.
+
+    Only the few seconds of audio around each censored word are extracted
+    and transcribed — not the whole video."""
     censored = [w for w in yt_words if w["word"] == "__CENSORED__"]
     if not censored:
         return yt_words
 
-    if log_fn:
-        log_fn(f"Filling {len(censored)} censored word(s) with local transcription...")
+    _check_cancel(cancel_check)
 
-    # Run whisper to get uncensored words
-    audio_path = _extract_audio(video_path, log_fn)
+    windows = _merge_windows([w["start"] for w in censored])
+    total_audio = sum(end - start for start, end in windows)
+    if log_fn:
+        log_fn(f"Filling {len(censored)} censored word(s): transcribing "
+               f"{len(windows)} snippet(s) (~{total_audio:.0f}s of audio)...")
+
+    snippet_paths = []
     try:
-        whisper_words = _transcribe_faster_whisper(audio_path, log_fn)
+        snippets = []
+        for start, end in windows:
+            _check_cancel(cancel_check)
+            path = _extract_audio_snippet(video_path, start, end - start, log_fn)
+            snippet_paths.append(path)
+            snippets.append((path, start))
+        whisper_words = _transcribe_faster_whisper(
+            snippets, log_fn, cancel_check=cancel_check)
+    except TranscriptionCancelled:
+        raise
+    except TranscriptionError as e:
+        # Whisper fill-in is best-effort: keep the captions and drop the
+        # placeholders rather than failing over to a full local transcription.
+        if log_fn:
+            log_fn(f"Whisper fill-in failed ({e}); leaving censored words out.")
+        whisper_words = []
     finally:
-        try:
-            os.unlink(audio_path)
-        except OSError:
-            pass
+        for p in snippet_paths:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
     # For each censored slot, find the closest whisper word by timestamp
     for cw in censored:
@@ -262,21 +393,26 @@ def _fill_censored_words(yt_words: list[dict], video_path: str, log_fn=None) -> 
     return [w for w in yt_words if w["word"] and w["word"] != "__CENSORED__"]
 
 
-def transcribe(video_path: str, url: str = None, log_fn=None) -> list[dict]:
+def transcribe(video_path: str, url: str = None, log_fn=None,
+               cancel_check=None) -> list[dict]:
     # Try YouTube captions first (most accurate, no local compute)
     if url:
         try:
             words, censored_count = _fetch_youtube_captions(url, log_fn)
             if censored_count > 0:
-                words = _fill_censored_words(words, video_path, log_fn)
+                words = _fill_censored_words(words, video_path, log_fn,
+                                             cancel_check=cancel_check)
             if log_fn:
                 log_fn(f"Transcription complete: {len(words)} words (YouTube captions" +
                        (" + whisper fill-in)" if censored_count else ")"))
             return words
+        except TranscriptionCancelled:
+            raise
         except Exception as e:
             if log_fn:
                 log_fn(f"YouTube captions unavailable ({e}), using local transcription...")
 
+    _check_cancel(cancel_check)
     audio_path = _extract_audio(video_path, log_fn)
 
     try:
@@ -294,7 +430,8 @@ def transcribe(video_path: str, url: str = None, log_fn=None) -> list[dict]:
             if log_fn:
                 log_fn(f"Parakeet failed, falling back to faster-whisper: {e}")
 
-        words = _transcribe_faster_whisper(audio_path, log_fn)
+        words = _transcribe_faster_whisper([(audio_path, 0.0)], log_fn,
+                                           cancel_check=cancel_check)
         return words
 
     finally:
