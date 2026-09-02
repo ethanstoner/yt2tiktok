@@ -366,9 +366,12 @@ def _fill_censored_words(yt_words: list[dict], video_path: str, log_fn=None,
             snippets, log_fn, cancel_check=cancel_check)
     except TranscriptionCancelled:
         raise
-    except TranscriptionError as e:
+    except Exception as e:
         # Whisper fill-in is best-effort: keep the captions and drop the
         # placeholders rather than failing over to a full local transcription.
+        # Catches everything, not just TranscriptionError — an OSError from
+        # the temp dir would otherwise reach transcribe()'s handler and throw
+        # away a perfectly good caption set.
         if log_fn:
             log_fn(f"Whisper fill-in failed ({e}); leaving censored words out.")
         whisper_words = []
